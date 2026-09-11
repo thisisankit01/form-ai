@@ -1,3 +1,5 @@
+import { humanizeLabel } from "../display";
+
 interface ActivityListProps {
   heading: string;
   items: Array<{
@@ -26,7 +28,7 @@ export default function ActivityListSection({
               <span className="font-medium text-[var(--product-secondary)]">●</span>
             </div>
             <div>
-              <h3 className="font-medium text-[var(--product-foreground)]">{item.title}</h3>
+              <h3 className="font-medium text-[var(--product-foreground)]">{humanizeLabel(item.title)}</h3>
               <p className="text-[var(--product-secondary)]">{item.detail}</p>
               {item.timeLabel && (
                 <span className="ml-2 font-mono text-xs text-[var(--product-secondary)]">

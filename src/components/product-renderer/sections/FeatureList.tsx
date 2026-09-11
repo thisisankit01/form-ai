@@ -1,3 +1,5 @@
+import { humanizeLabel } from "../display";
+
 interface FeatureListProps {
   heading: string;
   items: Array<{
@@ -19,14 +21,14 @@ export default function FeatureListSection({
         </h2>
       )}
       <div className="space-y-6">
-        {items.map((item) => (
+        {items.map((item, index) => (
           <div key={item.id} className="border-t border-[var(--product-border)] pt-6 first:border-t-0 first:pt-0">
             <div className="flex items-start space-x-4">
               <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--product-muted)]">
-                <span className="font-medium text-[var(--product-secondary)]">{item.id}</span>
+                <span className="font-medium text-[var(--product-secondary)]">{index + 1}</span>
               </div>
-              <div>
-                <h3 className="font-medium text-[var(--product-foreground)]">{item.title}</h3>
+              <div className="min-w-0">
+                <h3 className="font-medium text-[var(--product-foreground)]">{humanizeLabel(item.title)}</h3>
                 <p className="text-[var(--product-secondary)]">{item.body}</p>
               </div>
             </div>

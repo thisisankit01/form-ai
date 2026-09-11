@@ -1,3 +1,5 @@
+import { humanizeLabel, isTechnicalId } from "../display";
+
 interface DataTableProps {
   heading: string;
   columns: Array<{
@@ -12,6 +14,7 @@ export default function DataTableSection({
   columns,
   rows,
 }: DataTableProps) {
+  const visibleColumns = columns.filter((column) => !isTechnicalId(column.key) && !isTechnicalId(column.label));
   return (
     <section className="space-y-6">
       {heading && (
@@ -23,12 +26,12 @@ export default function DataTableSection({
         <table className="w-full border-collapse text-left text-[var(--product-secondary)]">
           <thead>
             <tr className="border-b border-[var(--product-border)]">
-              {columns.map((col) => (
+              {visibleColumns.map((col) => (
                 <th
                   key={col.key}
                   className="p-4 text-left text-xs font-medium uppercase tracking-wider text-[var(--product-secondary)]"
                 >
-                  {col.label}
+                  {humanizeLabel(col.label)}
                 </th>
               ))}
             </tr>
@@ -36,7 +39,7 @@ export default function DataTableSection({
           <tbody className="divide-y divide-line">
             {rows.map((row, rowIndex) => (
               <tr key={row.id || rowIndex} className="hover:bg-[var(--product-muted)]">
-                {columns.map((col) => (
+                {visibleColumns.map((col) => (
                   <td key={col.key} className="p-4">
                     {row[col.key] || ""}
                   </td>

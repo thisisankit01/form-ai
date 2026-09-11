@@ -64,6 +64,13 @@ export const VisualSchema = z.object({
   density: z.enum(["low", "medium", "high"]),
   usefulPatterns: z.array(z.string()),
   issues: z.array(z.string()),
+  typography: z.string().optional(),
+  imageTreatment: z.string().optional(),
+  sectionOrder: z.array(z.string()).optional(),
+  mediaReferences: z.array(z.object({
+    url: z.string(),
+    alt: z.string().max(160),
+  })).max(12).optional(),
 }).nullable();
 export type VisualFindings = z.infer<typeof VisualSchema>;
 
@@ -180,6 +187,7 @@ export const ProductSpec = z.object({
       },
       { message: "Must have 1-5 pages" }
     ),
+  visualDirection: VisualSchema.optional(),
   uiDirection: z.string().max(800),
 });
 export type ProductSpec = z.infer<typeof ProductSpec>;
@@ -210,6 +218,10 @@ const SectionHero = z.object({
     })
     .optional(),
   composition: z.enum(["split", "centered"]),
+  media: z.object({
+    url: z.string(),
+    alt: z.string().max(160),
+  }).optional(),
 });
 
 const SectionFeatureList = z.object({

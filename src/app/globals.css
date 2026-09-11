@@ -317,11 +317,15 @@
   min-height: 0;
   min-width: 0;
 }
+.form-chat-header {
+  flex: 0 0 auto;
+}
 .form-chat-messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 .form-chat-composer {
   flex: 0 0 auto;
@@ -333,6 +337,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 .form-preview-toolbar {
   flex: 0 0 auto;
@@ -342,6 +347,56 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
+}
+
+/* Preview owns its height and keeps generated website content inside the device. */
+.preview-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+.preview-stage {
+  min-width: 0;
+  overscroll-behavior: contain;
+}
+.preview-device-frame {
+  height: clamp(360px, calc(100dvh - 220px), 760px);
+  max-width: 100%;
+}
+.preview-device-frame-desktop {
+  width: min(1120px, 100%);
+}
+.preview-device-frame-tablet {
+  width: min(768px, 100%);
+}
+.preview-device-frame-mobile {
+  width: min(390px, 100%);
+}
+.preview-website,
+.preview-website * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.preview-website table {
+  table-layout: fixed;
+}
+.preview-website th,
+.preview-website td {
+  word-break: break-word;
+}
+.preview-website img,
+.preview-website svg {
+  max-width: 100%;
+}
+
+@media (max-width: 639px) {
+  .preview-stage {
+    padding: 0.75rem;
+  }
+  .preview-device-frame {
+    height: clamp(360px, calc(100dvh - 190px), 680px);
+    border-radius: 16px;
+  }
 }
 
 /* Scrollbar styling */

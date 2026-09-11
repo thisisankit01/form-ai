@@ -30,12 +30,12 @@ export async function runResearchAgent(sourceText: string, metadata: Record<stri
   return result.data;
 }
 
-export async function runVisualAgent(screenshotUrl: string | null, goal: string, audience: string): Promise<VisualFindings> {
+export async function runVisualAgent(screenshotUrl: string | null, goal: string, audience: string, metadata: Record<string, unknown> = {}): Promise<VisualFindings> {
   if (!screenshotUrl) return null;
   try {
     const result = await analyzeImage(VisualSchema, {
       system: VISUAL_AGENT_SYSTEM,
-      user: VISUAL_AGENT_USER(goal, audience),
+      user: VISUAL_AGENT_USER(goal, audience, metadata),
       imageUrl: screenshotUrl,
       temperature: 0.1,
     });
@@ -71,13 +71,29 @@ export async function runUIAgent(brief: ProductBrief): Promise<ProductSpec> {
       user: UI_AGENT_USER(brief),
       temperature: 0.2,
     });
-    return result.data;
+    const spec = result.data;
+    const sourceMedia = brief.visualDirection?.mediaReferences?.[0];
+    if (!sourceMedia) return spec;
+
+    return {
+      ...spec,
+      pages: spec.pages.map((page) => ({
+        ...page,
+        sections: page.sections.map((section) => (
+          section.type === 'hero' && !section.media
+            ? { ...section, media: sourceMedia }
+            : section
+        )),
+      })),
+    };
   } catch {
     const features = [...brief.features];
     while (features.length < 4) {
       const index = features.length + 1;
       features.push({ id: `feature-${index}`, title: `Core capability ${index}`, description: 'A focused workflow that helps the target customer make progress.', priority: 'should' });
     }
+    const featureItems = features.slice(0, 6).map((feature) => ({ id: feature.id, title: feature.title, body: feature.description }));
+    const firstFeature = featureItems[0];
     return ProductSpec.parse({
       schemaVersion: 1,
       name: brief.name,
@@ -90,10 +106,22 @@ export async function runUIAgent(brief: ProductBrief): Promise<ProductSpec> {
       pages: [{
         id: 'home', slug: '/', title: brief.name, kind: 'landing', sections: [
           { type: 'hero', id: 'hero', eyebrow: 'Built for modern teams', headline: brief.name, body: brief.description, primaryAction: { kind: 'demo-dialog', label: 'Get started', dialogTitle: 'Get started', dialogBody: 'Tell us what you want to build.' }, composition: 'split' },
-          { type: 'feature-list', id: 'features', heading: 'Everything you need to move faster', items: features.slice(0, 4).map((feature) => ({ id: feature.id, title: feature.title, body: feature.description })) },
+          { type: 'feature-list', id: 'features', heading: 'The essential workflow', items: featureItems },
+          { type: 'steps', id: 'steps', heading: 'A clearer way to make progress', items: [
+            { title: 'Start with the right context', body: brief.audience },
+            { title: 'Turn priorities into action', body: firstFeature?.body || brief.positioning },
+            { title: 'Review and keep moving', body: brief.description },
+          ] },
+          { type: 'rich-text', id: 'about', heading: 'Built around the work', paragraphs: [brief.positioning, brief.description] },
+          { type: 'faq', id: 'faq', heading: 'Questions before you begin', items: [
+            { question: 'Who is this for?', answer: brief.audience },
+            { question: 'What does it help with?', answer: brief.description },
+          ] },
+          { type: 'cta', id: 'cta', heading: 'Make the next step clear', body: brief.positioning, action: { kind: 'scroll', label: 'Explore the workflow', sectionId: 'features' } },
         ],
       }],
-      uiDirection: 'Clean, editorial interface with clear hierarchy and generous spacing.',
+      visualDirection: brief.visualDirection,
+      uiDirection: 'Specific, source-informed interface with clear hierarchy, deliberate section rhythm, and human-facing labels.',
     });
   }
 }
@@ -131,7 +159,7 @@ export interface EditPipelineInput { currentSpec: ProductSpec; instruction: stri
 
 export async function runAnalysisPipeline(input: AnalysisPipelineInput): Promise<Analysis> {
   const facts = await runResearchAgent(input.captureResult.normalizedText, input.captureResult.metadata);
-  const visual = await runVisualAgent(input.captureResult.screenshotUrl, input.goal, input.audience);
+  const visual = await runVisualAgent(input.captureResult.screenshotUrl, input.goal, input.audience, input.captureResult.metadata);
   const analysis = await runProductAnalyst(facts, visual, input.goal, input.audience);
   return analysis;
 }

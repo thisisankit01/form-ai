@@ -69,6 +69,53 @@ function requireError(error: Error | null | undefined): void {
   if (error) throw error;
 }
 
+export interface BuildSourceContext {
+  sourceUrl: string | null;
+  screenshotUrl: string | null;
+  screenshotPath: string | null;
+  sourceImageUrls: string[];
+  sectionOrder: unknown[];
+  fidelityMetadata: Record<string, unknown> | null;
+  screenshotContext: Record<string, unknown> | null;
+  sourceEvidenceAvailable: boolean;
+}
+
+export function createBuildSourceContext(capture: any, screenshotUrl?: string | null): BuildSourceContext {
+  const metadata = (capture?.metadata && typeof capture.metadata === 'object' ? capture.metadata : {}) as Record<string, unknown>;
+  const fidelity = (metadata.fidelity && typeof metadata.fidelity === 'object' ? metadata.fidelity : null) as Record<string, unknown> | null;
+  const assets = (fidelity?.assets && typeof fidelity.assets === 'object' ? fidelity.assets : {}) as { images?: unknown };
+  const sourceImageUrls = Array.isArray(assets.images) ? assets.images.filter((url): url is string => typeof url === 'string') : [];
+  const sectionOrder = Array.isArray(fidelity?.sectionOrder) ? fidelity.sectionOrder : [];
+  const sourceEvidenceAvailable = Boolean(
+    capture?.normalized_text || capture?.final_url || capture?.screenshot_path || fidelity?.dom || sourceImageUrls.length || sectionOrder.length,
+  );
+
+  return {
+    sourceUrl: capture?.final_url || capture?.requested_url || null,
+    screenshotUrl: screenshotUrl || (typeof capture?.screenshot_path === 'string' && /^https?:\/\//.test(capture.screenshot_path) ? capture.screenshot_path : null),
+    screenshotPath: capture?.screenshot_path || null,
+    sourceImageUrls,
+    sectionOrder,
+    fidelityMetadata: fidelity,
+    screenshotContext: fidelity?.screenshot && typeof fidelity.screenshot === 'object' ? fidelity.screenshot as Record<string, unknown> : null,
+    sourceEvidenceAvailable,
+  };
+}
+
+function isGenericSourceFallback(spec: any): boolean {
+  const sections = spec?.pages?.[0]?.sections;
+  const legacyFallback = Array.isArray(sections)
+    && sections.length === 2
+    && sections[0]?.type === 'hero'
+    && sections[1]?.type === 'feature-list'
+    && sections[0]?.eyebrow === 'Built for modern teams'
+    && sections[1]?.heading === 'Everything you need to move faster';
+  const expandedFallback = spec?.uiDirection === 'Specific, source-informed interface with clear hierarchy, deliberate section rhythm, and human-facing labels.'
+    && Array.isArray(sections)
+    && sections.map((section: any) => section?.id).join(',') === 'hero,features,steps,about,faq,cta';
+  return legacyFallback || expandedFallback;
+}
+
 async function stopIfCancelled(supabase: any, jobId: string, projectId: string): Promise<boolean> {
   const { data: job, error } = await supabase.from('jobs').select('status, cancel_requested').eq('id', jobId).eq('project_id', projectId).single();
   requireData(job, error, 'Job not found');
@@ -185,8 +232,8 @@ export const analyzeJob = inngest.createFunction(
           title: 'Pasted content',
           normalized_text: captureResult.normalizedText,
           screenshot_path: null,
-          captured_at: captureResult.capturedAt,
-          metadata: captureResult.metadata,
+           captured_at: captureResult.capturedAt,
+           metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null },
         }).select('id').single();
         persistedCaptureId = requireData(persistedCapture, captureError, 'Pasted capture could not be persisted').id;
       } else {
@@ -216,7 +263,7 @@ export const analyzeJob = inngest.createFunction(
             normalized_text: captureResult.normalizedText,
             screenshot_path: captureResult.screenshotPath,
             captured_at: captureResult.capturedAt,
-            metadata: captureResult.metadata,
+             metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null },
           }).select('id').single();
           persistedCaptureId = requireData(persistedCapture, captureError, 'Website capture could not be persisted').id;
         }
@@ -227,6 +274,7 @@ export const analyzeJob = inngest.createFunction(
         normalized_text: captureResult.normalized_text ?? captureResult.normalizedText,
         screenshot_path: captureResult.screenshot_path ?? captureResult.screenshotPath,
         final_url: captureResult.final_url ?? captureResult.finalUrl,
+        fidelity: captureResult.fidelity ?? captureResult.metadata?.fidelity ?? null,
       };
       if (captureResult.screenshotData && persistedCaptureId) {
         const screenshotPath = `captures/${projectId}/${persistedCaptureId}.png`;
@@ -256,7 +304,7 @@ export const analyzeJob = inngest.createFunction(
         const analysis = await runAnalysisPipeline({
           captureResult: {
             normalizedText: captureResult.normalized_text,
-            screenshotUrl: captureResult.screenshot_path,
+           screenshotUrl: captureResult.screenshot_path,
             metadata: { ...(captureResult.metadata as Record<string, unknown>), fidelity: captureResult.fidelity || null },
             title: captureResult.title,
           },
@@ -279,7 +327,7 @@ export const analyzeJob = inngest.createFunction(
            capture_id: persistedCaptureId,
           source_url: captureResult.finalUrl,
           source_text: captureResult.normalizedText,
-          screenshot_url: captureResult.screenshotPath,
+           screenshot_url: captureResult.screenshot_path,
           schema_version: 1,
            summary_claim: analysis.summary.text,
            summary_status: analysis.summary.status,
@@ -380,6 +428,25 @@ export const buildJob = inngest.createFunction(
 
       requireData(analysis, analysisError, 'Analysis not found');
 
+      const { data: sourceCapture, error: sourceCaptureError } = await supabase
+        .from('source_captures')
+        .select('*')
+        .eq('id', analysis.capture_id)
+        .eq('project_id', input.projectId)
+        .maybeSingle();
+      requireError(sourceCaptureError);
+      let sourceScreenshotUrl: string | null = null;
+      if (sourceCapture?.screenshot_path) {
+        if (/^https?:\/\//.test(sourceCapture.screenshot_path)) {
+          sourceScreenshotUrl = sourceCapture.screenshot_path;
+        } else {
+          const signed = await supabase.storage.from('form-assets').createSignedUrl(sourceCapture.screenshot_path, 3600);
+          if (signed.error) throw signed.error;
+          sourceScreenshotUrl = signed.data?.signedUrl || null;
+        }
+      }
+      const sourceContext = createBuildSourceContext(sourceCapture, sourceScreenshotUrl);
+
       const [targetUsersResult, keyFeaturesResult, improvementsResult, mvpFeaturesResult, evidenceResult, visualResult] = await Promise.all([
         supabase.from('analysis_target_users').select('*').eq('analysis_id', input.analysisId).order('ord'),
         supabase.from('analysis_key_features').select('*').eq('analysis_id', input.analysisId).order('ord'),
@@ -401,7 +468,7 @@ export const buildJob = inngest.createFunction(
       // Run build pipeline
       const spec = await step.run('build-pipeline', async () => {
         const { runBuildPipeline } = await import('@/lib/ai/pipeline');
-        const spec = await runBuildPipeline({
+         const spec = await runBuildPipeline({
           analysis: {
             schemaVersion: 1,
             summary: { text: analysis.summary_claim, status: analysis.summary_status, evidenceIds: [] },
@@ -421,10 +488,22 @@ export const buildJob = inngest.createFunction(
                issues: JSON.parse(visual.issues),
              } : null,
             limitations: [],
-          },
-          goal: project?.description || '',
-        });
-        return spec;
+           },
+           goal: project?.description || '',
+           sourceContext,
+           sourceEvidence: sourceContext.sourceEvidenceAvailable ? {
+             sourceUrl: sourceContext.sourceUrl,
+             sourceImageUrls: sourceContext.sourceImageUrls,
+             sectionOrder: sourceContext.sectionOrder,
+             fidelityMetadata: sourceContext.fidelityMetadata,
+           } : null,
+           screenshotContext: sourceContext.screenshotContext,
+           allowGenericFallback: !sourceContext.sourceEvidenceAvailable,
+         } as any);
+         if (sourceContext.sourceEvidenceAvailable && isGenericSourceFallback(spec)) {
+           throw new Error('Build returned a generic fallback despite available source evidence');
+         }
+         return spec;
       });
 
       // Store product spec

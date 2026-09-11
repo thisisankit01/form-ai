@@ -63,6 +63,23 @@ export interface CaptureResult {
   fidelity?: Record<string, unknown>;
 }
 
+export interface PageFidelity {
+  viewport: { width: number; height: number };
+  documentHeight: number;
+  dom: string;
+  assets: {
+    images: string[];
+    stylesheets: string[];
+    scripts: string[];
+    fonts: string[];
+    resources: string[];
+    other: string[];
+  };
+  fonts: Array<{ family: string; status: string; weight: string; style: string; stretch: string }>;
+  sectionOrder: Array<{ index: number; id: string | null; label: string | null; heading: string | null }>;
+  screenshot: { fullPage: true; width: number; height: number };
+}
+
 export interface ScreenshotUploadResult {
   path: string;
   publicUrl: string | null;
@@ -104,23 +121,38 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
       const screenshot = await withTimeout(page.screenshot({ fullPage: true, type: 'png' }), BROWSER_TIMEOUT_MS, 'Screenshot capture') as Buffer;
       screenshotData = screenshot.toString('base64');
       fidelity = await withTimeout(page.evaluate(() => {
-        const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,a,button,img,nav,header,section,footer')).slice(0, 180);
-        const properties = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textTransform', 'color', 'backgroundColor', 'borderRadius'] as const;
+        const resolveUrl = (value: string | null | undefined) => {
+          if (!value) return null;
+          try { return new URL(value, document.baseURI).href; } catch { return null; }
+        };
+        const unique = (values: Array<string | null>) => Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+        const images = unique(Array.from(document.querySelectorAll('img,source')).map((node) => {
+          const element = node as HTMLImageElement | HTMLSourceElement;
+          return resolveUrl('currentSrc' in element ? element.currentSrc : element.srcset?.split(',')[0]?.trim().split(' ')[0] || element.src);
+        }));
+        const stylesheets = unique(Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map((node) => resolveUrl((node as HTMLLinkElement).href)));
+        const scripts = unique(Array.from(document.scripts).map((script) => resolveUrl(script.src)));
+        const resources = unique(performance.getEntriesByType('resource').map((entry) => resolveUrl((entry as PerformanceResourceTiming).name)));
+        const fontResources = resources.filter((url) => /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/i.test(url));
+        const loadedImageResources = resources.filter((url) => /\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(url));
+        const other = unique(Array.from(document.querySelectorAll('video, audio, source, link[rel="icon"]')).map((node) => {
+          const element = node as HTMLMediaElement | HTMLSourceElement | HTMLLinkElement;
+          return resolveUrl('href' in element ? element.href : 'currentSrc' in element ? element.currentSrc : element.src);
+        }));
+        const sections = Array.from(document.querySelectorAll('header,main,nav,section,footer')).map((node, index) => ({
+          index,
+          id: node.id || null,
+          label: node.getAttribute('aria-label') || null,
+          heading: node.querySelector('h1,h2,h3,h4')?.textContent?.trim().replace(/\s+/g, ' ') || null,
+        }));
         return {
           viewport: { width: window.innerWidth, height: window.innerHeight },
           documentHeight: document.documentElement.scrollHeight,
-          fonts: Array.from(document.fonts || []).map((font) => ({ family: font.family, status: font.status, weight: font.weight })).slice(0, 40),
-          elements: nodes.map((node) => {
-            const style = getComputedStyle(node);
-            const rect = node.getBoundingClientRect();
-            return {
-              tag: node.tagName.toLowerCase(),
-              text: (node.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 180),
-              src: node instanceof HTMLImageElement ? node.currentSrc : undefined,
-              rect: { x: Math.round(rect.x), y: Math.round(rect.y + window.scrollY), width: Math.round(rect.width), height: Math.round(rect.height) },
-              styles: Object.fromEntries(properties.map((property) => [property, style[property]])),
-            };
-          }),
+          dom: document.documentElement.outerHTML,
+          assets: { images: unique([...images, ...loadedImageResources]), stylesheets, scripts, fonts: fontResources, resources, other },
+          fonts: Array.from(document.fonts || []).map((font) => ({ family: font.family, status: font.status, weight: font.weight, style: font.style, stretch: font.stretch })),
+          sectionOrder: sections,
+          screenshot: { fullPage: true, width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
         };
       }), BROWSER_TIMEOUT_MS, 'Fidelity analysis');
     } catch (browserError) {
@@ -136,7 +168,7 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
       title: resultData.metadata?.title || null,
       normalizedText,
       screenshotPath,
-      metadata: resultData.metadata || {},
+      metadata: { ...(resultData.metadata || {}), fidelity: fidelity || null },
       capturedAt: new Date().toISOString(),
       screenshotData,
       fidelity,

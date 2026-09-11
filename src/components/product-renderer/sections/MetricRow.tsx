@@ -1,3 +1,5 @@
+import { humanizeLabel } from "../display";
+
 interface MetricRowProps {
   metrics: Array<{
     id: string;
@@ -15,7 +17,7 @@ export default function MetricRowSection({
       <div className="grid gap-4">
         {metrics.map((metric) => (
           <div key={metric.id} className="text-center">
-            <p className="text-sm font-medium text-[var(--product-secondary)]">{metric.label}</p>
+            <p className="text-sm font-medium text-[var(--product-secondary)]">{humanizeLabel(metric.label)}</p>
             <p className="mt-1 text-2xl font-bold text-[var(--product-foreground)]">{metric.value}</p>
             {metric.delta && (
               <p className={`text-xs font-medium ${metric.delta.startsWith("-") ? "text-danger" : "text-success"}`}>

@@ -15,12 +15,21 @@ export function PreviewPanel({ spec }: PreviewPanelProps) {
   const [viewMode, setViewMode] = useState("desktop"); // desktop, tablet, mobile
   const [frameWidth, setFrameWidth] = useState<number | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [dialog, setDialog] = useState<{ title: string; body: string } | null>(null);
   function handleAction(action: unknown) {
     const candidate = action as Partial<Action>;
     if (candidate.kind === "demo-dialog") setDialog({ title: candidate.dialogTitle || candidate.label || "Preview action", body: candidate.dialogBody || "This interaction is ready for product implementation." });
-    if (candidate.kind === "scroll" && candidate.sectionId) document.getElementById(candidate.sectionId)?.scrollIntoView({ behavior: "smooth" });
+    if (candidate.kind === "scroll" && candidate.sectionId) {
+      const content = contentRef.current;
+      const target = Array.from(content?.querySelectorAll<HTMLElement>("[data-preview-section-id]") || [])
+        .find((element) => element.dataset.previewSectionId === candidate.sectionId);
+      if (content && target) {
+        const top = target.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
+        content.scrollTo({ top, behavior: "smooth" });
+      }
+    }
   }
 
   function startResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -41,7 +50,7 @@ export function PreviewPanel({ spec }: PreviewPanelProps) {
   }, []);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className="preview-panel flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex shrink-0 items-center justify-between gap-4">
         <div><h2 className="text-text font-semibold">Live Preview</h2><p className="mt-1 text-xs text-text-secondary">Independent product canvas</p></div>
         <div className="flex items-center gap-1 rounded-control border border-line bg-surface p-1">
@@ -72,12 +81,12 @@ export function PreviewPanel({ spec }: PreviewPanelProps) {
         </div>
       </div>
       
-      <div className="relative flex min-h-0 flex-1 items-start justify-center overflow-auto rounded-panel border border-line bg-[radial-gradient(#c4c3bd_1px,transparent_1px)] [background-size:16px_16px] p-5 shadow-inner">
-        <div ref={frameRef} style={frameWidth ? { width: `${frameWidth}px` } : undefined} className={`${getViewDimensions(viewMode)} relative flex min-h-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-black/15 bg-white shadow-[0_24px_70px_rgba(17,17,17,.16)]`}>
+      <div className="preview-stage relative flex min-h-0 flex-1 items-start justify-center overflow-auto rounded-panel border border-line bg-[radial-gradient(#c4c3bd_1px,transparent_1px)] [background-size:16px_16px] p-5 shadow-inner">
+        <div ref={frameRef} style={frameWidth ? { width: `${frameWidth}px` } : undefined} className={`${getViewDimensions(viewMode)} preview-device-frame relative flex min-h-0 shrink-0 flex-col overflow-hidden rounded-[22px] border border-black/15 bg-white shadow-[0_24px_70px_rgba(17,17,17,.16)]`}>
            <ProductThemeProvider className="flex min-h-0 flex-1 flex-col" defaultTheme={spec?.theme ? themeConfigs[spec.theme.preset === "precision-dark" ? "precisionDark" : spec.theme.preset === "warm-service" ? "warmService" : "editorialLight"] : themeConfigs.editorialLight}>
-             <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--product-background)] p-5">
-               {spec ? spec.pages.map((page) => <section key={page.id} className="mb-10"><h2 className="mb-4 text-lg font-semibold text-[var(--product-foreground)]">{page.title}</h2><div className="space-y-6">{page.sections.map((section) => <div id={section.id} key={section.id}><ProductSection section={section} onAction={handleAction} /></div>)}</div></section>) : <div className="py-16 text-center"><p className="font-medium text-[var(--product-foreground)]">No preview yet</p><p className="mt-2 text-sm text-[var(--product-secondary)]">Analyze a source and build a version to render the product here.</p></div>}
-             </div>
+              <div ref={contentRef} className="preview-website min-h-0 flex-1 overflow-y-auto bg-[var(--product-background)] p-5">
+                {spec ? spec.pages.map((page) => <section key={page.id} className="mb-10 min-w-0"><h2 className="mb-4 text-lg font-semibold text-[var(--product-foreground)]">{page.title}</h2><div className="space-y-6">{page.sections.map((section) => <div data-preview-section-id={section.id} key={section.id}><ProductSection section={section} onAction={handleAction} /></div>)}</div></section>) : <div className="py-16 text-center"><p className="font-medium text-[var(--product-foreground)]">No preview yet</p><p className="mt-2 text-sm text-[var(--product-secondary)]">Analyze a source and build a version to render the product here.</p></div>}
+              </div>
            </ProductThemeProvider>
            <button type="button" aria-label="Resize preview frame" onPointerDown={startResize} className="absolute right-0 top-1/2 z-10 flex h-16 w-3 -translate-y-1/2 translate-x-1/2 cursor-col-resize items-center justify-center rounded-full border border-line bg-surface shadow-sm"><span className="h-8 w-px bg-text-secondary" /></button>
          </div>
@@ -90,12 +99,12 @@ export function PreviewPanel({ spec }: PreviewPanelProps) {
 function getViewDimensions(mode: string): string {
   switch (mode) {
       case "desktop":
-      return "h-full w-full";
+      return "preview-device-frame-desktop";
     case "tablet":
-      return "h-full w-[768px] max-w-full";
+      return "preview-device-frame-tablet";
     case "mobile":
-      return "h-full w-[390px] max-w-full";
+      return "preview-device-frame-mobile";
     default:
-      return "h-full w-full";
+      return "preview-device-frame-desktop";
   }
 }
