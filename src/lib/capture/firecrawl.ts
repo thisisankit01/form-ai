@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { FirecrawlAppV1 as FirecrawlApp } from '@mendable/firecrawl-js';
-import { chromium } from 'playwright';
 
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
 
@@ -28,7 +27,7 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: s
   }
 }
 
-async function closeBrowser(browser: Awaited<ReturnType<typeof chromium.launch>>): Promise<void> {
+async function closeBrowser(browser: any): Promise<void> {
   try {
     await withTimeout(browser.close(), BROWSER_CLEANUP_TIMEOUT_MS, 'Browser cleanup');
   } catch (error) {
@@ -36,11 +35,11 @@ async function closeBrowser(browser: Awaited<ReturnType<typeof chromium.launch>>
   }
 }
 
-async function launchBrowserWithTimeout(): Promise<Awaited<ReturnType<typeof chromium.launch>>> {
+async function launchBrowserWithTimeout(chromium: any): Promise<any> {
   const launch = chromium.launch({ headless: true });
   let timedOut = false;
   // A launch that resolves after the timeout still owns a browser process.
-  launch.then((browser) => {
+  launch.then((browser: any) => {
     if (timedOut) return closeBrowser(browser);
   }).catch(() => undefined);
   try {
@@ -94,14 +93,16 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
     const screenshotPath = resultData.screenshot || resultData.screenshotUrl || null;
     let screenshotData: string | undefined;
     let fidelity: Record<string, unknown> | undefined;
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+    let browser: any = null;
     try {
-      browser = await launchBrowserWithTimeout();
-      const page = await withTimeout(browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }), BROWSER_TIMEOUT_MS, 'Browser page creation');
+      const { chromium } = await import('playwright');
+      browser = await launchBrowserWithTimeout(chromium);
+      const page: any = await withTimeout(browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }), BROWSER_TIMEOUT_MS, 'Browser page creation');
       await withTimeout(page.goto(validatedUrl, { waitUntil: 'domcontentloaded', timeout: BROWSER_TIMEOUT_MS }), BROWSER_TIMEOUT_MS, 'Browser navigation');
       await withTimeout(page.evaluate(() => document.fonts?.ready), BROWSER_TIMEOUT_MS, 'Font loading');
       await withTimeout(page.waitForTimeout(1200), BROWSER_TIMEOUT_MS, 'Page settling');
-      screenshotData = (await withTimeout(page.screenshot({ fullPage: true, type: 'png' }), BROWSER_TIMEOUT_MS, 'Screenshot capture')).toString('base64');
+      const screenshot = await withTimeout(page.screenshot({ fullPage: true, type: 'png' }), BROWSER_TIMEOUT_MS, 'Screenshot capture') as Buffer;
+      screenshotData = screenshot.toString('base64');
       fidelity = await withTimeout(page.evaluate(() => {
         const nodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,a,button,img,nav,header,section,footer')).slice(0, 180);
         const properties = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textTransform', 'color', 'backgroundColor', 'borderRadius'] as const;

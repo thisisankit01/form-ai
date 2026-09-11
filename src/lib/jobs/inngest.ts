@@ -77,8 +77,6 @@ async function stopIfCancelled(supabase: any, jobId: string, projectId: string):
   return true;
 }
 
-const STALE_JOB_MS = 15 * 60 * 1000;
-
 async function claimJob(supabase: any, input: {
   projectId: string;
   kind: string;
@@ -99,10 +97,6 @@ async function claimJob(supabase: any, input: {
   requireError(existingError);
 
   if (existing?.status === 'succeeded') return { job: existing, duplicate: true };
-  if (existing?.status === 'running' && existing.started_at && Date.now() - new Date(existing.started_at).getTime() <= STALE_JOB_MS) {
-    return { job: existing, duplicate: true };
-  }
-
   if (existing) {
     const { data: job, error } = await supabase.from('jobs').update({
       status: 'running', stage: existing.stage || input.kind, started_at: now,
