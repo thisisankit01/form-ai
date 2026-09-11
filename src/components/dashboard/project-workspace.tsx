@@ -83,7 +83,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }, [data, projectId]);
 
   async function sendInstruction() {
-    if (!instruction.trim() || !data?.version) return;
+    if (!instruction.trim() || !data?.version || activeJob) return;
     setSending(true);
     try {
       const response = await fetch(`/api/projects/${projectId}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ instruction: instruction.trim(), baseVersionId: data.version.id, idempotencyKey: crypto.randomUUID() }) });
@@ -101,6 +101,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }
 
   async function startAnalysis() {
+    if (activeJob) return;
     setStarting(true);
     setError(null);
     setNotice(null);
@@ -122,7 +123,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }
 
   async function startQa() {
-    if (!data?.version) return;
+    if (!data?.version || activeJob) return;
     setQaStarting(true);
     setError(null);
     try {
@@ -176,7 +177,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             <div className="min-h-[520px] rounded-panel border border-line bg-surface p-3"><PreviewPanel spec={spec} /></div>
           </div>
       </div>
-       <ProjectRunSheet open={runSheetOpen} onOpenChange={setRunSheetOpen} data={data} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} onRunQa={startQa} qaStarting={qaStarting} />
+        <ProjectRunSheet open={runSheetOpen} onOpenChange={setRunSheetOpen} data={data} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} onRunQa={startQa} qaStarting={qaStarting} hasActiveJob={!!activeJob} />
     </div>
   );
 }

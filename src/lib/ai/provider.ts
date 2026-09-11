@@ -6,21 +6,13 @@ import { AIVisionUnavailableError } from './vision-unavailable';
 
 // Provider configuration from environment
 const AI_BASE_URL = process.env.AI_BASE_URL || 'https://api.deepseek.com/v1';
-const AI_API_KEY = process.env.AI_API_KEY;
-const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
 const AI_MAX_OUTPUT_TOKENS = parseInt(process.env.APP_AI_MAX_OUTPUT_TOKENS || '8000', 10);
 
-if (!AI_API_KEY) {
-  throw new Error('AI_API_KEY environment variable is required');
+function getProvider() {
+  const apiKey = process.env.AI_API_KEY;
+  if (!apiKey) throw new Error('AI_API_KEY environment variable is required');
+  return createOpenAICompatible({ name: 'deepseek', baseURL: AI_BASE_URL, apiKey });
 }
-
-const provider = createOpenAICompatible({
-  name: 'deepseek',
-  baseURL: AI_BASE_URL,
-  apiKey: AI_API_KEY,
-});
-
-const textModel = provider(AI_MODEL);
 
 async function generateGeminiJson(system: string, user: string, temperature: number, maxTokens: number): Promise<string> {
   const apiKey = process.env.AI_VISION_API_KEY;
@@ -65,7 +57,7 @@ export async function generateValidated<T>(
   }
 ): Promise<{ data: T; usage?: { promptTokens: number; completionTokens: number } }> {
   const { system, user, temperature = 0.1, maxTokens = AI_MAX_OUTPUT_TOKENS, modelOverride } = options;
-  const model = modelOverride ? provider(modelOverride) : textModel;
+  const model = getProvider()(modelOverride || process.env.AI_MODEL || 'deepseek-chat');
 
   const schemaDescription = schemaToDescription(schema);
 

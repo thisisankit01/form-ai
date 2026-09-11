@@ -39,9 +39,11 @@ export function WorkspaceTopBar() {
     setExportMessage(null);
     setExportUrl(null);
     try {
-      const projectResponse = await fetch(`/api/projects/${projectId}`);
-      const projectResult = await projectResponse.json();
-      const versionId = projectResult.data?.version?.id;
+       const projectResponse = await fetch(`/api/projects/${projectId}`);
+       const projectResult = await projectResponse.json();
+       const activeJob = projectResult.data?.recentJobs?.some((job: { status?: string }) => ["queued", "running"].includes(job.status || ""));
+       if (activeJob) throw new Error("Finish the active run before exporting.");
+       const versionId = projectResult.data?.version?.id;
       if (!versionId) throw new Error("Generate a product version before exporting.");
       const response = await fetch(`/api/projects/${projectId}/export`, {
         method: "POST",
