@@ -105,6 +105,8 @@ create table if not exists job_steps (
   model text,
   usage jsonb,
   duration_ms integer,
+  started_at timestamptz,
+  finished_at timestamptz,
   error_code text,
   output_ref text,
   created_at timestamptz not null default timezone('utc'::text, now()),

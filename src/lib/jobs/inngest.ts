@@ -8,6 +8,21 @@ async function getJobSupabase() {
   return createAdminClient();
 }
 
+function getFailureMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const value = error as { message?: unknown; error?: unknown };
+    if (typeof value.message === 'string') return value.message;
+    if (typeof value.error === 'string') return value.error;
+  }
+  return 'The worker failed without a usable error message.';
+}
+
+function isFinalAttempt(attempt?: number, maxAttempts?: number): boolean {
+  return maxAttempts === undefined || attempt === undefined || attempt >= maxAttempts - 1;
+}
+
 async function updateJobStep(
   supabase: any,
   jobId: string,
@@ -146,7 +161,7 @@ interface InngestEvent<T> {
 // ANALYZE JOB
 export const analyzeJob = inngest.createFunction(
   { id: 'analyze-website', retries: 2, triggers: [{ event: 'jobs/analyze.requested' }] },
-  async ({ event, step }: { event: InngestEvent<AnalyzeEventData>; step: any }) => {
+  async ({ event, step, attempt, maxAttempts }: { event: InngestEvent<AnalyzeEventData>; step: any; attempt?: number; maxAttempts?: number }) => {
     const input = event.data;
     const { projectId, captureId, idempotencyKey, jobId: queuedJobId } = input;
 
@@ -337,9 +352,9 @@ export const analyzeJob = inngest.createFunction(
         return { jobId, status: 'cancelled' };
       }
       await updateJobStatus(supabase as any, jobId, {
-        status: 'failed',
-        error_code: 'ANALYSIS_FAILED',
-        error_message: error instanceof Error ? error.message : 'Unknown error',
+        status: isFinalAttempt(attempt, maxAttempts) ? 'failed' : 'running',
+        error_code: isFinalAttempt(attempt, maxAttempts) ? 'ANALYSIS_FAILED' : 'RETRYING',
+        error_message: getFailureMessage(error),
         finished_at: new Date().toISOString(),
       });
       throw error;
@@ -350,7 +365,7 @@ export const analyzeJob = inngest.createFunction(
 // BUILD JOB
 export const buildJob = inngest.createFunction(
   { id: 'build-product', retries: 2, triggers: [{ event: 'jobs/build.requested' }] },
-  async ({ event, step }: any) => {
+  async ({ event, step, attempt, maxAttempts }: any) => {
     const input = event.data;
     const supabase = await getJobSupabase();
 
@@ -511,9 +526,9 @@ export const buildJob = inngest.createFunction(
       return { jobId };
     } catch (error) {
       await updateJobStatus(supabase as any, jobId, {
-        status: 'failed',
-        error_code: 'BUILD_FAILED',
-        error_message: error instanceof Error ? error.message : 'Unknown error',
+        status: isFinalAttempt(attempt, maxAttempts) ? 'failed' : 'running',
+        error_code: isFinalAttempt(attempt, maxAttempts) ? 'BUILD_FAILED' : 'RETRYING',
+        error_message: getFailureMessage(error),
         finished_at: new Date().toISOString(),
       });
       throw error;
@@ -524,7 +539,7 @@ export const buildJob = inngest.createFunction(
 // EDIT JOB
 export const editJob = inngest.createFunction(
   { id: 'edit-product', retries: 2, triggers: [{ event: 'jobs/edit.requested' }] },
-  async ({ event, step }: any) => {
+  async ({ event, step, attempt, maxAttempts }: any) => {
     const input = event.data;
     const { messageId } = input;
 
@@ -617,9 +632,9 @@ export const editJob = inngest.createFunction(
     } catch (error) {
       if (messageId) await supabase.from('messages').update({ job_id: jobId, status: 'failed' }).eq('id', messageId);
       await updateJobStatus(supabase as any, jobId, {
-        status: 'failed',
-        error_code: 'EDIT_FAILED',
-        error_message: error instanceof Error ? error.message : 'Unknown error',
+        status: isFinalAttempt(attempt, maxAttempts) ? 'failed' : 'running',
+        error_code: isFinalAttempt(attempt, maxAttempts) ? 'EDIT_FAILED' : 'RETRYING',
+        error_message: getFailureMessage(error),
         finished_at: new Date().toISOString(),
       });
       throw error;
@@ -630,7 +645,7 @@ export const editJob = inngest.createFunction(
 // QA JOB
 export const qaJob = inngest.createFunction(
   { id: 'qa-product', retries: 1, triggers: [{ event: 'jobs/qa.requested' }] },
-  async ({ event, step }: any) => {
+  async ({ event, step, attempt, maxAttempts }: any) => {
     const input = event.data;
     const supabase = await getJobSupabase();
     const project = await loadProject(supabase, input.projectId);
@@ -665,7 +680,7 @@ export const qaJob = inngest.createFunction(
       await updateJobStatus(supabase as any, job.id, { status: 'succeeded', stage: 'completed', result_id: report?.id, finished_at: new Date().toISOString() });
       return { jobId: job.id, reportId: report?.id, passed };
     } catch (error) {
-      await updateJobStatus(supabase as any, job.id, { status: 'failed', error_code: 'QA_FAILED', error_message: error instanceof Error ? error.message : 'Unknown error', finished_at: new Date().toISOString() });
+      await updateJobStatus(supabase as any, job.id, { status: isFinalAttempt(attempt, maxAttempts) ? 'failed' : 'running', error_code: isFinalAttempt(attempt, maxAttempts) ? 'QA_FAILED' : 'RETRYING', error_message: getFailureMessage(error), ...(isFinalAttempt(attempt, maxAttempts) ? { finished_at: new Date().toISOString() } : {}) });
       throw error;
     }
   }
@@ -674,7 +689,7 @@ export const qaJob = inngest.createFunction(
 // EXPORT JOB
 export const exportJob = inngest.createFunction(
   { id: 'export-product', retries: 1, triggers: [{ event: 'jobs/export.requested' }] },
-  async ({ event, step }: any) => {
+  async ({ event, step, attempt, maxAttempts }: any) => {
     const input = event.data;
     const supabase = await getJobSupabase();
 
@@ -762,9 +777,9 @@ export const exportJob = inngest.createFunction(
       return { jobId, exportId: exportRecord.id, downloadUrl: storagePath };
     } catch (error) {
       await updateJobStatus(supabase as any, jobId, {
-        status: 'failed',
-        error_code: 'EXPORT_FAILED',
-        error_message: error instanceof Error ? error.message : 'Unknown error',
+        status: isFinalAttempt(attempt, maxAttempts) ? 'failed' : 'running',
+        error_code: isFinalAttempt(attempt, maxAttempts) ? 'EXPORT_FAILED' : 'RETRYING',
+        error_message: getFailureMessage(error),
         finished_at: new Date().toISOString(),
       });
       throw error;
