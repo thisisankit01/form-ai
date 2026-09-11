@@ -2,7 +2,7 @@
 import { inngest } from './client';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { ProductSpec } from '@/lib/product/schema';
-import { runRenderedQA, validateProductSpec } from '@/lib/qa';
+import { validateProductSpec } from '@/lib/qa/validate';
 
 async function getJobSupabase() {
   return createAdminClient();
@@ -659,7 +659,10 @@ export const qaJob = inngest.createFunction(
       const parsed = ProductSpec.safeParse(version.spec);
       const validationIssues = parsed.success ? [] : parsed.error.issues.map((issue) => ({ check: 'schema', code: 'schema-invalid', severity: 'error' as const, message: `${issue.path.join('.') || 'spec'}: ${issue.message}`, suggestedFix: 'Regenerate this version.' }));
       const deterministic = parsed.success ? validateProductSpec(parsed.data) : { valid: false, issues: validationIssues, checkedSections: 0, checkedActions: 0 };
-      const rendered = parsed.success && deterministic.valid ? await step.run('qa-rendered', () => runRenderedQA(parsed.data)) : { issues: [], viewports: [] };
+      const rendered = parsed.success && deterministic.valid ? await step.run('qa-rendered', async () => {
+        const { runRenderedQA } = await import('@/lib/qa/render');
+        return runRenderedQA(parsed.data);
+      }) : { issues: [], viewports: [] };
       const aiReview = parsed.success ? await step.run('qa-agent', async () => {
         const { runQAAgent } = await import('@/lib/ai/pipeline');
         return runQAAgent(parsed.data, project?.description || '', deterministic, rendered);

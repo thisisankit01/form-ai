@@ -36,6 +36,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^1.42.0",
     "next": "16.3.4",
+    "playwright": "^1.63.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-hook-form": "^7.87.0",

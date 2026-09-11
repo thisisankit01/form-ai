@@ -1,4 +1,3 @@
-import { chromium } from '@playwright/test';
 import type { ProductSpec } from '@/lib/product/schema';
 import { buildProductSpecFixtureHtml } from './fixture';
 import type { QAFinding, RenderedQAReport } from './types';
@@ -11,6 +10,7 @@ function renderFinding(code: string, message: string, severity: QAFinding['sever
 
 export async function runRenderedQA(spec: ProductSpec): Promise<RenderedQAReport> {
   const issues: QAFinding[] = [];
+  const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true }).catch((error: unknown) => {
     issues.push(renderFinding('browser-unavailable', `Rendered QA could not start Chromium: ${error instanceof Error ? error.message : 'unknown error'}`));
     return null;
