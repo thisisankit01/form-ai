@@ -38,7 +38,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const requestSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
     const timeout = window.setTimeout(() => timeoutController.abort(), 15000);
     try {
-      const response = await fetch(`/api/projects/${projectId}`, { signal: requestSignal });
+      const response = await fetch(`/api/projects/${projectId}`, { signal: requestSignal, cache: "no-store" });
       const result = await response.json();
     if (!response.ok) throw new Error(getApiErrorMessage(result, "Project could not be loaded."));
       setData(result.data as WorkspaceData);
@@ -79,7 +79,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     if (!data) return;
-    fetch(`/api/projects/${projectId}/messages`).then((response) => response.ok ? response.json() : null).then((result) => { if (result?.data) setMessages(result.data); }).catch(() => undefined);
+     fetch(`/api/projects/${projectId}/messages`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((result) => { if (result?.data) setMessages(result.data); }).catch(() => undefined);
   }, [data, projectId]);
 
   async function sendInstruction() {
