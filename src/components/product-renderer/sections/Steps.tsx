@@ -18,7 +18,7 @@ export default function StepsSection({
           {heading}
         </h2>
       )}
-      <ol className="grid gap-6 text-[var(--product-secondary)]">
+      <ol className="grid gap-6 text-[var(--product-secondary)] md:grid-cols-2">
         {items.map((item, index) => (
           <li key={item.id || index} className="flex items-start space-x-4">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--product-accent)]/20">

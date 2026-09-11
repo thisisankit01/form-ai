@@ -20,10 +20,10 @@ export default function FeatureListSection({
           {heading}
         </h2>
       )}
-      <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2">
         {items.map((item, index) => (
-          <div key={item.id} className="border-t border-[var(--product-border)] pt-6 first:border-t-0 first:pt-0">
-            <div className="flex items-start space-x-4">
+          <div key={item.id} className="rounded-[var(--product-radius-panel)] border border-[var(--product-border)] p-5">
+            <div className="flex items-start gap-4">
               <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--product-muted)]">
                 <span className="font-medium text-[var(--product-secondary)]">{index + 1}</span>
               </div>

@@ -21,9 +21,9 @@ export default function ActivityListSection({
           {heading}
         </h2>
       )}
-      <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {items.map((item) => (
-          <div key={item.id} className="flex items-start space-x-4">
+          <div key={item.id} className="flex items-start gap-4 rounded-[var(--product-radius-panel)] border border-[var(--product-border)] p-4">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--product-muted)]">
               <span className="font-medium text-[var(--product-secondary)]">●</span>
             </div>

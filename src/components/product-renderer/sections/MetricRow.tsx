@@ -14,9 +14,9 @@ export default function MetricRowSection({
 }: MetricRowProps) {
   return (
     <section className="space-y-6">
-      <div className="grid gap-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((metric) => (
-          <div key={metric.id} className="text-center">
+          <div key={metric.id} className="rounded-[var(--product-radius-panel)] border border-[var(--product-border)] bg-[var(--product-muted)]/35 p-5 text-left">
             <p className="text-sm font-medium text-[var(--product-secondary)]">{humanizeLabel(metric.label)}</p>
             <p className="mt-1 text-2xl font-bold text-[var(--product-foreground)]">{metric.value}</p>
             {metric.delta && (

@@ -32,7 +32,7 @@ export default function PricingSection({
           {heading}
         </h2>
       )}
-      <div className="grid gap-6">
+      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
         {plans.map((plan) => (
           <div
             key={plan.id}
