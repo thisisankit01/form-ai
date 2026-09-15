@@ -1,7 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ProductSpec } from '@/lib/product/schema';
 import { buildProductSpecFixtureHtml } from './fixture';
 import { validateProductSpec } from './validate';
+
+const { goto } = vi.hoisted(() => ({ goto: vi.fn().mockResolvedValue({ ok: () => true, status: () => 200 }) }));
+vi.mock('playwright', () => ({
+  chromium: { launch: vi.fn().mockResolvedValue({
+    newPage: vi.fn().mockResolvedValue({
+      goto,
+      setViewportSize: vi.fn(),
+      evaluate: vi.fn().mockResolvedValue({ overflow: false, empty: false }),
+    }),
+    close: vi.fn(),
+  }) },
+}));
 
 function makeSpec(overrides: Partial<ProductSpec> = {}): ProductSpec {
   return {
@@ -62,5 +74,18 @@ describe('ProductSpec deterministic QA', () => {
     expect(html).toContain('data-qa-section="hero"');
     expect(html).toContain('data-qa-action="demo-dialog"');
     expect(html).not.toMatch(/https?:\/\//);
+  });
+
+  it('runs V3 rendered QA against the artifact preview URL, not fixture HTML', async () => {
+    const { runRenderedQA } = await import('./render');
+    const report = await runRenderedQA({
+      previewUrl: 'https://sandbox.example',
+      previewToken: 'preview-token',
+      routes: [{ path: '/', title: 'Home' }, { path: '/about', title: 'About' }],
+    });
+    expect(report.issues).toEqual([]);
+    expect(report.checkedRoutes).toEqual(['/', '/about']);
+    expect(goto).toHaveBeenCalledWith('https://sandbox.example/', { waitUntil: 'domcontentloaded' });
+    expect(goto).toHaveBeenCalledWith('https://sandbox.example/about', { waitUntil: 'domcontentloaded' });
   });
 });

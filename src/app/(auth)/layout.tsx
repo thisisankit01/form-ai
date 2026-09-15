@@ -1,4 +1,6 @@
 import { Metadata } from "next";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: "Authentication | FORM",
@@ -9,7 +11,11 @@ interface AuthLayoutProps {
   children: React.ReactNode;
 }
 
-export default function AuthLayout({ children }: AuthLayoutProps) {
+export default async function AuthLayout({ children }: AuthLayoutProps) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user) redirect("/app");
+
   return (
     <div className="min-h-screen flex bg-canvas">
       <div className="hidden lg:flex lg:w-[44%] flex-col items-center justify-center p-12 bg-ink text-text-inverse">

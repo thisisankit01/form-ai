@@ -20,12 +20,21 @@ import {
   QAResult,
   QAResultSchema
 } from '@/lib/product/schema';
+import type { BuildSourceContext } from './contracts';
+
+const ResearchSourceFacts = SourceFacts.extend({
+  targetUsers: SourceFacts.shape.targetUsers.max(2),
+  keyFeatures: SourceFacts.shape.keyFeatures.max(4),
+  evidence: SourceFacts.shape.evidence.max(3),
+  limitations: SourceFacts.shape.limitations.max(2),
+});
 
 export async function runResearchAgent(sourceText: string, metadata: Record<string, unknown>): Promise<SourceFacts> {
-  const result = await generateValidated(SourceFacts, {
+  const result = await generateValidated(ResearchSourceFacts, {
     system: RESEARCH_AGENT_SYSTEM,
     user: RESEARCH_AGENT_USER(sourceText, metadata),
     temperature: 0.1,
+    maxTokens: 900,
   });
   return result.data;
 }
@@ -38,6 +47,7 @@ export async function runVisualAgent(screenshotUrl: string | null, goal: string,
       user: VISUAL_AGENT_USER(goal, audience, metadata),
       imageUrl: screenshotUrl,
       temperature: 0.1,
+      maxTokens: 1800,
     });
     return result.data;
   } catch (error: unknown) {
@@ -51,79 +61,51 @@ export async function runProductAnalyst(facts: SourceFacts, visual: VisualFindin
     system: PRODUCT_ANALYST_SYSTEM,
     user: PRODUCT_ANALYST_USER(facts, visual, goal, audience),
     temperature: 0.2,
+    maxTokens: 3000,
   });
   return result.data;
 }
 
-export async function runProductAgent(analysis: Analysis, goal: string): Promise<ProductBrief> {
+export async function runProductAgent(analysis: Analysis, goal: string, sourceContext: BuildSourceContext): Promise<ProductBrief> {
+  const promptSourceContext = {
+    sourceUrl: sourceContext.sourceUrl,
+    sourceImageUrls: sourceContext.sourceImageUrls,
+    sectionOrder: sourceContext.sectionOrder,
+    screenshotContext: sourceContext.screenshotContext,
+    sourceEvidenceAvailable: sourceContext.sourceEvidenceAvailable,
+  };
   const result = await generateValidated(ProductBrief, {
     system: PRODUCT_AGENT_SYSTEM,
-    user: PRODUCT_AGENT_USER(analysis, goal),
+    user: PRODUCT_AGENT_USER(analysis, goal, promptSourceContext),
     temperature: 0.3,
+    maxTokens: 2500,
   });
   return { ...result.data, visualDirection: analysis.visual };
 }
 
 export async function runUIAgent(brief: ProductBrief): Promise<ProductSpec> {
-  try {
-    const result = await generateValidated(ProductSpec, {
-      system: UI_AGENT_SYSTEM,
-      user: UI_AGENT_USER(brief),
-      temperature: 0.2,
-    });
-    const spec = result.data;
-    const sourceMedia = brief.visualDirection?.mediaReferences?.[0];
-    if (!sourceMedia) return spec;
+  const result = await generateValidated(ProductSpec, {
+    system: UI_AGENT_SYSTEM,
+    user: UI_AGENT_USER(brief),
+    temperature: 0.2,
+    maxTokens: 3500,
+    includeSchemaDescription: false,
+  });
+  const spec = result.data;
+  const sourceMedia = brief.visualDirection?.mediaReferences?.[0];
+  if (!sourceMedia) return spec;
 
-    return {
-      ...spec,
-      pages: spec.pages.map((page) => ({
-        ...page,
-        sections: page.sections.map((section) => (
-          section.type === 'hero' && !section.media
-            ? { ...section, media: sourceMedia }
-            : section
-        )),
-      })),
-    };
-  } catch {
-    const features = [...brief.features];
-    while (features.length < 4) {
-      const index = features.length + 1;
-      features.push({ id: `feature-${index}`, title: `Core capability ${index}`, description: 'A focused workflow that helps the target customer make progress.', priority: 'should' });
-    }
-    const featureItems = features.slice(0, 6).map((feature) => ({ id: feature.id, title: feature.title, body: feature.description }));
-    const firstFeature = featureItems[0];
-    return ProductSpec.parse({
-      schemaVersion: 1,
-      name: brief.name,
-      description: brief.description,
-      audience: brief.audience,
-      positioning: brief.positioning,
-      features,
-      theme: { preset: 'editorial-light', accent: 'lime', density: 'comfortable', radius: 'soft' },
-      navigation: [{ id: 'home', label: 'Overview', pageId: 'home' }],
-      pages: [{
-        id: 'home', slug: '/', title: brief.name, kind: 'landing', sections: [
-          { type: 'hero', id: 'hero', eyebrow: 'Built for modern teams', headline: brief.name, body: brief.description, primaryAction: { kind: 'demo-dialog', label: 'Get started', dialogTitle: 'Get started', dialogBody: 'Tell us what you want to build.' }, composition: 'split' },
-          { type: 'feature-list', id: 'features', heading: 'The essential workflow', items: featureItems },
-          { type: 'steps', id: 'steps', heading: 'A clearer way to make progress', items: [
-            { title: 'Start with the right context', body: brief.audience },
-            { title: 'Turn priorities into action', body: firstFeature?.body || brief.positioning },
-            { title: 'Review and keep moving', body: brief.description },
-          ] },
-          { type: 'rich-text', id: 'about', heading: 'Built around the work', paragraphs: [brief.positioning, brief.description] },
-          { type: 'faq', id: 'faq', heading: 'Questions before you begin', items: [
-            { question: 'Who is this for?', answer: brief.audience },
-            { question: 'What does it help with?', answer: brief.description },
-          ] },
-          { type: 'cta', id: 'cta', heading: 'Make the next step clear', body: brief.positioning, action: { kind: 'scroll', label: 'Explore the workflow', sectionId: 'features' } },
-        ],
-      }],
-      visualDirection: brief.visualDirection,
-      uiDirection: 'Specific, source-informed interface with clear hierarchy, deliberate section rhythm, and human-facing labels.',
-    });
-  }
+  return {
+    ...spec,
+    pages: spec.pages.map((page) => ({
+      ...page,
+      sections: page.sections.map((section) => (
+        section.type === 'hero' && !section.media
+          ? { ...section, media: sourceMedia }
+          : section
+      )),
+    })),
+  };
 }
 
 export async function runRevisionAgent(currentSpec: ProductSpec, instruction: string): Promise<EditResult> {
@@ -154,18 +136,96 @@ export interface AnalysisPipelineInput {
   audience: string;
 }
 
-export interface BuildPipelineInput { analysis: Analysis; goal: string; }
+export interface BuildPipelineInput { analysis: Analysis; goal: string; sourceContext: BuildSourceContext; }
 export interface EditPipelineInput { currentSpec: ProductSpec; instruction: string; }
 
-export async function runAnalysisPipeline(input: AnalysisPipelineInput): Promise<Analysis> {
-  const facts = await runResearchAgent(input.captureResult.normalizedText, input.captureResult.metadata);
-  const visual = await runVisualAgent(input.captureResult.screenshotUrl, input.goal, input.audience, input.captureResult.metadata);
+export function compactCaptureMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const fidelity = metadata.fidelity && typeof metadata.fidelity === 'object'
+    ? metadata.fidelity as Record<string, unknown>
+    : {};
+  const assets = fidelity.assets && typeof fidelity.assets === 'object'
+    ? fidelity.assets as Record<string, unknown>
+    : {};
+  return {
+    sourceURL: typeof metadata.sourceURL === 'string' ? metadata.sourceURL : null,
+    title: typeof metadata.title === 'string' ? metadata.title.slice(0, 240) : null,
+    fidelity: {
+      viewport: fidelity.viewport,
+      documentHeight: fidelity.documentHeight,
+      assets: {
+        images: Array.isArray(assets.images) ? assets.images.filter((item): item is string => typeof item === 'string').slice(0, 40) : [],
+        stylesheets: Array.isArray(assets.stylesheets) ? assets.stylesheets.filter((item): item is string => typeof item === 'string').slice(0, 20) : [],
+        fonts: Array.isArray(assets.fonts) ? assets.fonts.filter((item): item is string => typeof item === 'string').slice(0, 20) : [],
+      },
+      fonts: Array.isArray(fidelity.fonts) ? fidelity.fonts.slice(0, 20) : [],
+      sectionOrder: Array.isArray(fidelity.sectionOrder) ? fidelity.sectionOrder.slice(0, 80) : [],
+      screenshot: fidelity.screenshot,
+    },
+  };
+}
+
+export function compactResearchSource(source: string): string {
+  const seen = new Set<string>();
+  const lines = source.split('\n').flatMap((line) => {
+    const value = line.trim().replace(/\s+/g, ' ');
+    if (!value || value.length < 20 || /^!\[/.test(value) || /^https?:\/\//.test(value) || /\]\(https?:\/\//.test(value)) return [];
+    if (/^(activity|skills|reviews|properties|reply|worked for|cycle|labels)$/i.test(value)
+      || /(?:\b\w+-\d{3,}\b|\b\d+\s*(?:min|hour)s? ago\b|\bjust now\b)/i.test(value)
+      || /(?:created the issue|pushed and opened|draft pr|typeerror:|in progress\d*|todo\d*|anyone else|has anyone|@linear|\b\d{1,2}:\d{2}\s*(?:am|pm)\b)/i.test(value)) return [];
+    const key = value.toLowerCase();
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [value];
+  });
+  return lines.join('\n').slice(0, 3_500);
+}
+
+function compactResearchMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const fidelity = metadata.fidelity && typeof metadata.fidelity === 'object' ? metadata.fidelity as Record<string, unknown> : {};
+  return {
+    sourceURL: typeof metadata.sourceURL === 'string' ? metadata.sourceURL : null,
+    title: typeof metadata.title === 'string' ? metadata.title : null,
+    sectionOrder: Array.isArray(fidelity.sectionOrder) ? fidelity.sectionOrder.slice(0, 12) : [],
+  };
+}
+
+function fallbackResearchFacts(sourceText: string, metadata: Record<string, unknown>): SourceFacts {
+  const sourceUrl = typeof metadata.sourceURL === 'string' ? metadata.sourceURL : '';
+  const excerpt = sourceText.replace(/\s+/g, ' ').trim().slice(0, 500) || 'No readable source content was captured.';
+  const title = typeof metadata.title === 'string' ? metadata.title : 'Captured website';
+  const headings = sourceText.match(/^#{1,3}\s+(.+)$/gm)?.map((heading) => heading.replace(/^#+\s+/, '').trim()).filter(Boolean).slice(0, 4) || [];
+  const evidence = [{ id: 'fallback-1', sourceUrl, excerpt }];
+  const claim = (text: string, status: 'observed' | 'inferred' | 'unknown' = 'inferred') => ({ text, status, evidenceIds: ['fallback-1'] });
+  return {
+    summary: claim(`${title} is represented by the captured website content.`, 'observed'),
+    targetUsers: [claim('Teams and users interested in the captured product.', 'unknown')],
+    coreProblem: claim('The source does not provide enough reliable detail to identify the core problem.', 'unknown'),
+    keyFeatures: (headings.length ? headings : ['Primary product workflow']).map((heading) => claim(heading, 'observed')).slice(0, 4),
+    businessModel: claim('Business model was not reliably identified from the capture.', 'unknown'),
+    evidence,
+    limitations: ['Research output required a bounded fallback because the provider returned incomplete JSON.'],
+  };
+}
+
+export async function runAnalysisPipeline(input: AnalysisPipelineInput & { onStage?: (stage: 'research' | 'visual' | 'analyst', status: 'running' | 'succeeded') => Promise<void> }): Promise<Analysis> {
+  const metadata = compactCaptureMetadata(input.captureResult.metadata);
+  await input.onStage?.('research', 'running');
+  const facts = await runResearchAgent(compactResearchSource(input.captureResult.normalizedText), compactResearchMetadata(metadata)).catch((error: unknown) => {
+    if (!(error instanceof Error) || !error.message.includes('Structured generation')) throw error;
+    return fallbackResearchFacts(input.captureResult.normalizedText, metadata);
+  });
+  await input.onStage?.('research', 'succeeded');
+  await input.onStage?.('visual', 'running');
+  const visual = await runVisualAgent(input.captureResult.screenshotUrl, input.goal, input.audience, metadata);
+  await input.onStage?.('visual', 'succeeded');
+  await input.onStage?.('analyst', 'running');
   const analysis = await runProductAnalyst(facts, visual, input.goal, input.audience);
+  await input.onStage?.('analyst', 'succeeded');
   return analysis;
 }
 
-export async function runBuildPipeline(input: { analysis: Analysis; goal: string }): Promise<ProductSpec> {
-  const brief = await runProductAgent(input.analysis, input.goal);
+export async function runBuildPipeline(input: BuildPipelineInput): Promise<ProductSpec> {
+  const brief = await runProductAgent(input.analysis, input.goal, input.sourceContext);
   const spec = await runUIAgent(brief);
   return spec;
 }

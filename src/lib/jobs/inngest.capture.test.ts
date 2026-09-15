@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { createBuildSourceContext } from './inngest';
+import { createBuildSourceContext, hashV3Build } from './inngest';
+import { PRODUCT_AGENT_USER } from '@/lib/ai/prompts';
 
 describe('build source mapping', () => {
+  it('build hash is stable for the same generated content', () => {
+    const base = {
+      id: 'artifact-a',
+      files: [{ path: 'src/App.tsx', content: 'export default function App() {}' }],
+      routes: [{ path: '/', title: 'Home' }],
+      capabilities: [],
+      sourceHash: 'a'.repeat(64),
+      dependencyLockHash: 'b'.repeat(64),
+      templateVersion: 'v3',
+    };
+
+    expect(hashV3Build(base)).toBe(hashV3Build({ ...base, id: 'artifact-b' }));
+  });
+
   it('preserves fidelity metadata, source images, section order, and screenshot context', () => {
     const fidelity = {
       dom: '<html><body><section id="intro"></section></body></html>',
@@ -36,5 +51,23 @@ describe('build source mapping', () => {
     expect(context.sourceImageUrls).toEqual([]);
     expect(context.sectionOrder).toEqual([]);
     expect(context.screenshotUrl).toBeNull();
+  });
+
+  it('delivers bounded source evidence to the Product Agent prompt', () => {
+    const prompt = PRODUCT_AGENT_USER(
+      { summary: 'analysis' },
+      'Build an operations tool',
+      {
+        sourceUrl: 'https://example.com',
+        sourceImageUrls: ['https://example.com/sentinel.webp'],
+        sectionOrder: [{ heading: 'Lower-page pricing detail' }],
+        screenshotContext: { fullPage: true, width: 1440, height: 2400 },
+        sourceEvidenceAvailable: true,
+      },
+    );
+
+    expect(prompt).toContain('Lower-page pricing detail');
+    expect(prompt).toContain('https://example.com/sentinel.webp');
+    expect(prompt).toContain('https://example.com');
   });
 });

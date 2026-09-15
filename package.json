@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:full-flow": "vitest run tests/full-flow.test.tsx"
+    "test:full-flow": "vitest run tests/full-flow.test.tsx",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.44",
@@ -32,6 +33,7 @@
     "ai": "^7.0.93",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "e2b": "^2.49.1",
     "inngest": "^4.20.0",
     "jszip": "^3.10.1",
     "lucide-react": "^1.42.0",

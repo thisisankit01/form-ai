@@ -78,13 +78,8 @@ export function WorkspaceTopBar() {
 
   return (
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-line bg-surface px-5 md:px-8">
-      <div className="flex items-center space-x-4 min-w-0">
-           <ProjectDropdown projectName={projectName} />
-        <div className="flex-1 min-w-0">
-          <h1 className="text-workspace-title truncate font-semibold text-text">
-            {projectName}
-          </h1>
-        </div>
+       <div className="flex min-w-0 items-center space-x-4">
+         <ProjectDropdown projectName={projectName} />
       </div>
       <div className="flex items-center space-x-3 shrink-0">
          <button

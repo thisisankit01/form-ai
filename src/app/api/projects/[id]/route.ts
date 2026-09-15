@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { recoverStaleActiveJob } from '@/app/api/_lib/jobs';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +41,8 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
+    await recoverStaleActiveJob(supabase, id, ['analyze', 'build', 'edit', 'qa', 'export']);
+
     // Fetch current analysis if exists
     let analysis = null;
     if (project.current_analysis_id) {
@@ -74,12 +77,47 @@ export async function GET(
     // Fetch current version if exists
     let version = null;
     if (project.current_version_id) {
-      const { data } = await supabase
+      const { data: rawVersion } = await supabase
         .from('product_versions')
-        .select('id, version_number, spec, schema_version, change_summary, created_at')
+        .select('id, version_number, spec, schema_version, change_summary, created_at, engine, design_plan, asset_manifest, artifact_manifest')
         .eq('id', project.current_version_id)
         .single();
-      version = data;
+      if (rawVersion?.engine === 'code-artifact-v3') {
+        const artifact = rawVersion.artifact_manifest && typeof rawVersion.artifact_manifest === 'object'
+          ? rawVersion.artifact_manifest as { id?: string; templateVersion?: string; routes?: unknown; capabilities?: unknown; sourceHash?: string }
+          : {};
+        version = {
+          id: rawVersion.id,
+          version_number: rawVersion.version_number,
+          spec: rawVersion.spec,
+          schema_version: rawVersion.schema_version,
+          change_summary: rawVersion.change_summary,
+          created_at: rawVersion.created_at,
+          engine: rawVersion.engine,
+          design_plan: rawVersion.design_plan,
+          asset_manifest: rawVersion.asset_manifest,
+          artifact: {
+            id: artifact.id || null,
+            templateVersion: artifact.templateVersion || null,
+            routes: Array.isArray(artifact.routes) ? artifact.routes : [],
+            capabilities: Array.isArray(artifact.capabilities) ? artifact.capabilities : [],
+            sourceHash: artifact.sourceHash || null,
+            previewUrl: `/api/projects/${id}/versions/${rawVersion.id}/preview/`,
+          },
+        };
+      } else {
+        if (rawVersion) {
+          version = {
+            id: rawVersion.id,
+            version_number: rawVersion.version_number,
+            spec: rawVersion.spec,
+            schema_version: rawVersion.schema_version,
+            change_summary: rawVersion.change_summary,
+            created_at: rawVersion.created_at,
+            engine: rawVersion.engine,
+          };
+        }
+      }
     }
 
     // Fetch recent jobs

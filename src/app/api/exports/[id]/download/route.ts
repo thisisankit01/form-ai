@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { apiError, internalError } from '@/app/api/_lib/response';
 
 export async function GET(
@@ -44,7 +45,7 @@ export async function GET(
     }
 
     // Create signed URL for download (valid for 1 hour)
-    const { data: signedUrl, error } = await supabase.storage
+    const { data: signedUrl, error } = await createAdminClient().storage
       .from('exports')
       .createSignedUrl(exportRecord.storage_path, 3600);
 

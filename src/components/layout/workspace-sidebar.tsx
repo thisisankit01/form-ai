@@ -5,8 +5,9 @@ import Link from "next/link";
 import { FORMMark } from "@/lib/brand/mark";
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { LogoutButton } from "@/components/layout/logout-button";
 
-export function WorkspaceSidebar() {
+export function WorkspaceSidebar({ projects = [] }: { projects?: { id: string; name: string; updatedAt: string }[] }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -43,7 +44,7 @@ export function WorkspaceSidebar() {
             </button>
           </SheetTrigger>
           <SheetContent className="w-[272px] max-w-[calc(100vw-48px)] p-0" side="left">
-            <SidebarContent isExpanded={true} onClose={() => setIsDrawerOpen(false)} />
+            <SidebarContent isExpanded={true} onClose={() => setIsDrawerOpen(false)} projects={projects} />
           </SheetContent>
         </Sheet>
       </>
@@ -58,7 +59,7 @@ return (
       )}
       aria-label="Main navigation"
     >
-      <SidebarContent isExpanded={isExpanded} onToggle={() => setIsExpanded(!isExpanded)} />
+       <SidebarContent isExpanded={isExpanded} onToggle={() => setIsExpanded(!isExpanded)} projects={projects} />
     </aside>
   );
 }
@@ -67,16 +68,13 @@ function SidebarContent({
   isExpanded,
   onToggle,
   onClose,
+  projects,
 }: {
   isExpanded: boolean;
   onToggle?: () => void;
   onClose?: () => void;
+  projects: { id: string; name: string; updatedAt: string }[];
 }) {
-  const navItems = [
-    { href: "/app", label: "Projects", icon: "▦" },
-    { href: "/app/projects/new", label: "New project", icon: "+" },
-  ];
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Brand / Header */}
@@ -116,26 +114,17 @@ function SidebarContent({
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1" role="navigation" aria-label="Main">
-        {navItems.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={cn(
-              "flex items-center gap-3 px-3 py-2.5 rounded-control text-text-inverse-secondary hover:bg-white/5 hover:text-text-inverse",
-              !isExpanded && "justify-center"
-            )}
-            aria-label={item.label}
-            onClick={onClose}
-          >
-            <span className={cn("flex-shrink-0 w-5 h-5 text-center", isExpanded ? "opacity-100" : "opacity-0")}>
-              {item.icon}
-            </span>
-            {isExpanded && (
-              <span className="whitespace-nowrap text-sm font-medium">{item.label}</span>
-            )}
-          </Link>
-        ))}
+      <nav className="flex-1 overflow-y-auto px-3 py-4" role="navigation" aria-label="Projects">
+        {isExpanded && <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-wider text-text-inverse-secondary">Recent projects</p>}
+        <div className="space-y-1">
+          {projects.length === 0 && isExpanded && <p className="px-3 py-3 text-xs leading-5 text-text-inverse-secondary">Your projects will appear here.</p>}
+          {projects.map((project) => (
+            <Link key={project.id} href={`/app/projects/${project.id}`} onClick={onClose} aria-label={project.name} className={cn("flex items-center gap-3 rounded-control px-3 py-2.5 text-text-inverse-secondary hover:bg-white/5 hover:text-text-inverse", !isExpanded && "justify-center")}>
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-white/10 text-[10px] font-bold">{project.name.slice(0, 1).toUpperCase()}</span>
+              {isExpanded && <span className="truncate text-sm font-medium">{project.name}</span>}
+            </Link>
+          ))}
+        </div>
       </nav>
 
       {/* Bottom workspace area */}
@@ -161,6 +150,9 @@ function SidebarContent({
             </div>
           </>
         )}
+        <div className={cn("mt-2", !isExpanded && "flex justify-center")}>
+          <LogoutButton isExpanded={isExpanded} />
+        </div>
       </div>
     </div>
   );

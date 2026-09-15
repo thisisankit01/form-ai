@@ -3,20 +3,104 @@ import { inngest } from './client';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { ProductSpec } from '@/lib/product/schema';
 import { validateProductSpec } from '@/lib/qa/validate';
+import type { BuildSourceContext } from '@/lib/ai/contracts';
+import { getGenerationEngine } from '@/lib/generation-v3/config';
+import { createEvidenceBundle, hashEvidence } from '@/lib/generation-v3/evidence';
+import { buildV3Artifact } from '@/lib/generation-v3/build';
+import { executeArtifact, assertSandboxConfigured } from '@/lib/generation-v3/sandbox';
+import { sha256 } from '@/lib/generation-v3/artifact';
+import { CodeArtifact } from '@/lib/generation-v3/contracts';
+import { V3_STARTER_FILES, V3_STARTER_TEMPLATE_VERSION } from '@/lib/generation-v3/starter';
 
 async function getJobSupabase() {
   return createAdminClient();
 }
 
+async function publishV3Version(supabase: any, input: {
+  projectId: string;
+  ownerId: string;
+  spec: unknown;
+  designPlan: unknown;
+  assetManifest: unknown;
+  artifact: any;
+  designPlanId: string;
+  assetManifestId: string;
+  previewUrl: string;
+  previewToken: string;
+  sandboxId: string;
+}) {
+  const { data: latestVersion, error: latestError } = await supabase
+    .from('product_versions')
+    .select('version_number')
+    .eq('project_id', input.projectId)
+    .order('version_number', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  requireError(latestError);
+
+  const { data: version, error: versionError } = await supabase
+    .from('product_versions')
+    .insert({
+      project_id: input.projectId,
+      version_number: (latestVersion?.version_number || 0) + 1,
+      spec: input.spec,
+      schema_version: 3,
+      engine: 'code-artifact-v3',
+      design_plan: input.designPlan,
+      asset_manifest: input.assetManifest,
+      artifact_manifest: input.artifact,
+      design_plan_id: input.designPlanId,
+      asset_manifest_id: input.assetManifestId,
+      source_hash: input.artifact.sourceHash,
+      build_hash: hashV3Build(input.artifact),
+      dependency_lock_hash: input.artifact.dependencyLockHash,
+      change_summary: ['Initial V3 code artifact'],
+      created_by: input.ownerId,
+    })
+    .select('id')
+    .single();
+  const persistedVersion = requireData(version, versionError, 'V3 version could not be persisted');
+
+  const { error: secretError } = await supabase.from('artifact_runtime_secrets').upsert({
+    version_id: persistedVersion.id,
+    preview_url: input.previewUrl,
+    preview_token: input.previewToken,
+    sandbox_id: input.sandboxId,
+    expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+  }, { onConflict: 'version_id' });
+  requireError(secretError);
+
+  const { error: projectError } = await supabase
+    .from('projects')
+    .update({ current_version_id: persistedVersion.id, status: 'built' })
+    .eq('id', input.projectId)
+    .eq('user_id', input.ownerId);
+  requireError(projectError);
+  return persistedVersion;
+}
+
 function getFailureMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object') {
-    const value = error as { message?: unknown; error?: unknown };
-    if (typeof value.message === 'string') return value.message;
-    if (typeof value.error === 'string') return value.error;
+  const value = error as { name?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; error?: unknown } | null;
+  const raw = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : typeof value?.message === 'string'
+        ? value.message
+        : typeof value?.error === 'string'
+          ? value.error
+          : '';
+  const status = value?.statusCode || value?.status;
+
+  if (typeof raw === 'string' && /timeout|abort/i.test(raw)) return 'The AI provider took too long to respond. Please retry.';
+  if (status === 429 || (typeof raw === 'string' && /rate limit|too many requests/i.test(raw))) {
+    return 'The AI provider is temporarily rate-limited. Please retry shortly.';
   }
-  return 'The worker failed without a usable error message.';
+  if (value?.name === 'AI_APICallError' || /requestBodyValues|chat\/completions|apiKey|authorization/i.test(raw)) {
+    return 'The AI provider could not complete this request. Please retry.';
+  }
+  if (raw.length > 240) return `${raw.slice(0, 237)}...`;
+  return raw || 'The worker failed without a usable error message.';
 }
 
 function isFinalAttempt(attempt?: number, maxAttempts?: number): boolean {
@@ -69,15 +153,21 @@ function requireError(error: Error | null | undefined): void {
   if (error) throw error;
 }
 
-export interface BuildSourceContext {
-  sourceUrl: string | null;
-  screenshotUrl: string | null;
-  screenshotPath: string | null;
-  sourceImageUrls: string[];
-  sectionOrder: unknown[];
-  fidelityMetadata: Record<string, unknown> | null;
-  screenshotContext: Record<string, unknown> | null;
-  sourceEvidenceAvailable: boolean;
+function requireV3DependencyLockHash(): string {
+  const value = process.env.V3_DEPENDENCY_LOCK_HASH;
+  if (!value || !/^[a-f0-9]{64}$/.test(value)) throw new Error('V3_DEPENDENCY_LOCK_HASH must be a SHA-256 hash');
+  return value;
+}
+
+export function hashV3Build(artifact: any): string {
+  return sha256(JSON.stringify({
+    files: artifact.files.map(({ path, content }: { path: string; content: string }) => ({ path, content })),
+    routes: artifact.routes,
+    capabilities: artifact.capabilities,
+    sourceHash: artifact.sourceHash,
+    dependencyLockHash: artifact.dependencyLockHash,
+    templateVersion: artifact.templateVersion,
+  }));
 }
 
 export function createBuildSourceContext(capture: any, screenshotUrl?: string | null): BuildSourceContext {
@@ -178,8 +268,84 @@ async function claimJob(supabase: any, input: {
 }
 
 async function loadProject(supabase: any, projectId: string) {
-  const { data, error } = await supabase.from('projects').select('id, user_id, description').eq('id', projectId).single();
+  const { data, error } = await supabase.from('projects').select('id, user_id, description, target_customer').eq('id', projectId).single();
   return requireData(data, error, 'Project not found');
+}
+
+async function queueAutomaticBuild(supabase: any, input: { projectId: string; ownerId: string; analysisId: string }) {
+  const idempotencyKey = `analysis:${input.analysisId}:build`;
+  const { data: existing, error: existingError } = await supabase.from('jobs')
+    .select('id').eq('project_id', input.projectId).eq('kind', 'build').eq('idempotency_key', idempotencyKey).maybeSingle();
+  requireError(existingError);
+  if (existing) return existing.id;
+  const { data: job, error } = await supabase.from('jobs').insert({
+    project_id: input.projectId, owner_id: input.ownerId, kind: 'build', status: 'queued', stage: 'build',
+    idempotency_key: idempotencyKey, request_payload: { projectId: input.projectId, analysisId: input.analysisId, automatic: true },
+  }).select('id').single();
+  if (error?.code === '23505') {
+    const { data: duplicate, error: duplicateError } = await supabase.from('jobs').select('id').eq('project_id', input.projectId).eq('kind', 'build').eq('idempotency_key', idempotencyKey).single();
+    return requireData(duplicate, duplicateError, 'Automatic build could not be queued').id;
+  }
+  return requireData(job, error, 'Automatic build could not be queued').id;
+}
+
+async function persistCapturedWebsite(
+  supabase: any,
+  projectId: string,
+  input: { url?: string; pastedContent?: string },
+  captureId: string,
+): Promise<{ id: string }> {
+  const captureResult = input.pastedContent
+    ? await (async () => {
+        const { captureFromPastedContent } = await import('@/lib/capture/firecrawl');
+        return captureFromPastedContent(input.pastedContent || '', input.url || '');
+      })()
+    : await (async () => {
+        const { captureWebsite } = await import('@/lib/capture/firecrawl');
+        return captureWebsite(input.url || '');
+      })();
+
+  const { data: persistedCapture, error: captureError } = await supabase.from('source_captures').insert({
+    id: captureId,
+    project_id: projectId,
+    kind: captureResult.kind,
+    requested_url: captureResult.requestedUrl,
+    final_url: captureResult.finalUrl,
+    title: captureResult.title,
+    normalized_text: captureResult.normalizedText,
+    screenshot_path: captureResult.screenshotPath,
+    captured_at: captureResult.capturedAt,
+    metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null },
+  }).select('id').single();
+  if (captureError && captureError.code !== '23505') throw captureError;
+  const persistedId = persistedCapture?.id || captureId;
+
+  const screenshots = captureResult.screenshotDataByViewport
+    || (captureResult.screenshotData ? [{ viewport: 'desktop' as const, data: captureResult.screenshotData, width: 1440, height: 900 }] : []);
+  const screenshotPaths: Record<string, string> = {};
+  for (const screenshot of screenshots) {
+    const screenshotPath = `captures/${projectId}/${persistedId}-${screenshot.viewport}.png`;
+    const upload = await supabase.storage.from('form-assets').upload(
+      screenshotPath,
+      Buffer.from(screenshot.data, 'base64'),
+      { contentType: 'image/png', upsert: true },
+    );
+    if (upload.error) throw upload.error;
+    screenshotPaths[screenshot.viewport] = screenshotPath;
+  }
+
+  if (Object.keys(screenshotPaths).length === 0) return { id: persistedId };
+
+  const desktopPath = screenshotPaths.desktop || Object.values(screenshotPaths)[0];
+  const signed = await supabase.storage.from('form-assets').createSignedUrl(desktopPath, 3600);
+  if (signed.error) throw signed.error;
+  const { error: updateError } = await supabase.from('source_captures').update({
+    screenshot_path: desktopPath,
+    metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null, screenshots: screenshotPaths },
+  }).eq('id', persistedId).eq('project_id', projectId);
+  requireError(updateError);
+
+  return { id: persistedId };
 }
 
 // Type definitions for Inngest event data
@@ -218,24 +384,8 @@ export const analyzeJob = inngest.createFunction(
       let captureResult: any;
       let persistedCaptureId = captureId;
       if (input.pastedContent) {
-        captureResult = await step.run('capture-pasted', async () => {
-          const { captureFromPastedContent } = await import('@/lib/capture/firecrawl');
-          return captureFromPastedContent(input.pastedContent || '', input.url || '');
-        });
-
-        // Store capture
-        const { data: persistedCapture, error: captureError } = await supabase.from('source_captures').insert({
-          project_id: projectId,
-          kind: 'user_pasted',
-          requested_url: input.url || '',
-          final_url: input.url || '',
-          title: 'Pasted content',
-          normalized_text: captureResult.normalizedText,
-          screenshot_path: null,
-           captured_at: captureResult.capturedAt,
-           metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null },
-        }).select('id').single();
-        persistedCaptureId = requireData(persistedCapture, captureError, 'Pasted capture could not be persisted').id;
+        const persisted = await step.run('capture-pasted', () => persistCapturedWebsite(supabase, projectId, input, captureId));
+        persistedCaptureId = persisted.id;
       } else {
         const { data: existingCapture } = await supabase
           .from('source_captures')
@@ -249,26 +399,18 @@ export const analyzeJob = inngest.createFunction(
           captureResult = existingCapture;
           persistedCaptureId = existingCapture.id;
         } else {
-          captureResult = await step.run('capture-website', async () => {
-            const { captureWebsite } = await import('@/lib/capture/firecrawl');
-            return captureWebsite(input.url || '');
-          });
-
-          const { data: persistedCapture, error: captureError } = await supabase.from('source_captures').insert({
-            project_id: projectId,
-            kind: 'url',
-            requested_url: input.url || '',
-            final_url: captureResult.finalUrl,
-            title: captureResult.title,
-            normalized_text: captureResult.normalizedText,
-            screenshot_path: captureResult.screenshotPath,
-            captured_at: captureResult.capturedAt,
-             metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null },
-          }).select('id').single();
-          persistedCaptureId = requireData(persistedCapture, captureError, 'Website capture could not be persisted').id;
+          const persisted = await step.run('capture-website', () => persistCapturedWebsite(supabase, projectId, input, captureId));
+          persistedCaptureId = persisted.id;
         }
       }
 
+      const { data: persistedCapture, error: persistedCaptureError } = await supabase.from('source_captures')
+        .select('*').eq('id', persistedCaptureId).eq('project_id', projectId).single();
+      captureResult = requireData(persistedCapture, persistedCaptureError, 'Persisted capture could not be loaded');
+      if (captureResult.screenshot_path && !/^https?:\/\//.test(captureResult.screenshot_path)) {
+        const signed = await supabase.storage.from('form-assets').createSignedUrl(captureResult.screenshot_path, 3600);
+        if (!signed.error) captureResult.screenshot_path = signed.data?.signedUrl || captureResult.screenshot_path;
+      }
       captureResult = {
         ...captureResult,
         normalized_text: captureResult.normalized_text ?? captureResult.normalizedText,
@@ -276,48 +418,29 @@ export const analyzeJob = inngest.createFunction(
         final_url: captureResult.final_url ?? captureResult.finalUrl,
         fidelity: captureResult.fidelity ?? captureResult.metadata?.fidelity ?? null,
       };
-      if (captureResult.screenshotData && persistedCaptureId) {
-        const screenshotPath = `captures/${projectId}/${persistedCaptureId}.png`;
-        const upload = await supabase.storage.from('form-assets').upload(screenshotPath, Buffer.from(captureResult.screenshotData, 'base64'), { contentType: 'image/png', upsert: true });
-        if (upload.error) throw upload.error;
-        {
-          const signed = await supabase.storage.from('form-assets').createSignedUrl(screenshotPath, 3600);
-          if (signed.error) throw signed.error;
-          captureResult.screenshot_path = signed.data?.signedUrl || captureResult.screenshot_path;
-           const { error: screenshotUpdateError } = await supabase.from('source_captures').update({ screenshot_path: screenshotPath, metadata: { ...(captureResult.metadata || {}), fidelity: captureResult.fidelity || null } }).eq('id', persistedCaptureId).eq('project_id', projectId);
-          requireError(screenshotUpdateError);
-        }
-      }
       await updateJobStep(supabase as any, jobId, 'capture', { status: 'succeeded', output_ref: persistedCaptureId });
 
       // Stage 2: Analysis Pipeline
       const analysis = await step.run('analysis-pipeline', async () => {
         if (await stopIfCancelled(supabase, jobId, projectId)) throw new Error('Job cancelled');
-        await updateJobStatus(supabase as any, jobId, { stage: 'research' });
-        await updateJobStep(supabase as any, jobId, 'research', { status: 'running' });
-        await updateJobStatus(supabase as any, jobId, { stage: 'visual' });
-        await updateJobStep(supabase as any, jobId, 'visual', { status: 'running' });
-        await updateJobStatus(supabase as any, jobId, { stage: 'analyst' });
-        await updateJobStep(supabase as any, jobId, 'analyst', { status: 'running' });
-
-        const { runAnalysisPipeline } = await import('@/lib/ai/pipeline');
-        const analysis = await runAnalysisPipeline({
+         const { runAnalysisPipeline } = await import('@/lib/ai/pipeline');
+         const analysis = await runAnalysisPipeline({
           captureResult: {
             normalizedText: captureResult.normalized_text,
            screenshotUrl: captureResult.screenshot_path,
             metadata: { ...(captureResult.metadata as Record<string, unknown>), fidelity: captureResult.fidelity || null },
             title: captureResult.title,
           },
-          goal: input.description || '',
-          audience: input.targetCustomer || '',
-        });
+           goal: input.description || '',
+           audience: input.targetCustomer || '',
+           onStage: async (stage, status) => {
+             await updateJobStatus(supabase as any, jobId, { stage });
+             await updateJobStep(supabase as any, jobId, stage, { status });
+           },
+         });
 
         return analysis;
       });
-
-      await updateJobStep(supabase as any, jobId, 'research', { status: 'succeeded' });
-      await updateJobStep(supabase as any, jobId, 'visual', { status: 'succeeded' });
-      await updateJobStep(supabase as any, jobId, 'analyst', { status: 'succeeded' });
 
       // Store analysis
       const { data: analysisRecord, error: analysisError } = await supabase
@@ -325,8 +448,8 @@ export const analyzeJob = inngest.createFunction(
         .insert({
           project_id: input.projectId,
            capture_id: persistedCaptureId,
-          source_url: captureResult.finalUrl,
-          source_text: captureResult.normalizedText,
+           source_url: captureResult.final_url,
+           source_text: captureResult.normalized_text,
            screenshot_url: captureResult.screenshot_path,
           schema_version: 1,
            summary_claim: analysis.summary.text,
@@ -370,21 +493,17 @@ export const analyzeJob = inngest.createFunction(
         .eq('id', input.projectId);
       requireError(projectUpdateError);
 
-      await updateJobStatus(supabase as any, jobId, {
+       const automaticBuildJobId = await queueAutomaticBuild(supabase, { projectId: input.projectId, ownerId: project.user_id, analysisId: analysisRecord.id });
+       await inngest.send({
+         name: 'jobs/build.requested',
+         data: { projectId: input.projectId, analysisId: analysisRecord.id, jobId: automaticBuildJobId, idempotencyKey: `analysis:${analysisRecord.id}:build` },
+       });
+
+       await updateJobStatus(supabase as any, jobId, {
         status: 'succeeded',
         stage: 'completed',
          result_id: analysisRecord.id,
         finished_at: new Date().toISOString(),
-      });
-
-      await inngest.send({
-        name: 'jobs/build.requested',
-        data: {
-          projectId: input.projectId,
-          analysisId: analysisRecord.id,
-           jobId: (await claimJob(supabase, { projectId: input.projectId, kind: 'build', idempotencyKey: `build:${analysisRecord.id}`, ownerId: project.user_id, requestPayload: { projectId: input.projectId, analysisId: analysisRecord.id }, })).job.id,
-           idempotencyKey: `build:${analysisRecord.id}`,
-        },
       });
 
        return { jobId, analysisId: analysisRecord.id };
@@ -462,13 +581,71 @@ export const buildJob = inngest.createFunction(
       const { data: mvpFeatures } = mvpFeaturesResult;
       const { data: evidence } = evidenceResult;
       const { data: visual } = visualResult;
-      const { data: project, error: projectError } = await supabase.from('projects').select('description').eq('id', input.projectId).single();
-      requireData(project, projectError, 'Project not found');
+       const { data: project, error: projectError } = await supabase.from('projects').select('description').eq('id', input.projectId).single();
+       requireData(project, projectError, 'Project not found');
 
-      // Run build pipeline
+       if (getGenerationEngine() === 'code-artifact-v3') {
+         await updateJobStatus(supabase as any, jobId, { stage: 'v3-artifact' });
+         await updateJobStep(supabase as any, jobId, 'v3-artifact', { status: 'running' });
+         assertSandboxConfigured();
+         if (process.env.E2B_TEMPLATE !== V3_STARTER_TEMPLATE_VERSION) {
+           throw new Error(`E2B_TEMPLATE must be qualified for ${V3_STARTER_TEMPLATE_VERSION}`);
+         }
+         const v3Result = await step.run('build-v3-artifact', async () => {
+           const evidence = createEvidenceBundle({
+             capture: sourceCapture || {},
+             goal: project?.description || '',
+             audience: projectOwner.target_customer || '',
+           });
+           const built = await buildV3Artifact({
+             projectId: input.projectId,
+             goal: project?.description || '',
+             audience: projectOwner.target_customer || '',
+             evidence,
+             baseFiles: V3_STARTER_FILES,
+             dependencyLockHash: requireV3DependencyLockHash(),
+             sourceHash: hashEvidence(evidence),
+           });
+            return {
+              artifact: built.artifact,
+              designPlan: built.designPlan,
+              assetManifest: built.assetManifest,
+              designPlanId: built.designPlanId,
+              assetManifestId: built.assetManifestId,
+            };
+          });
+          let sandbox: Awaited<ReturnType<typeof executeArtifact>> | null = null;
+          let published = false;
+          try {
+            // Keep the token in process memory only. The durable step result above is sanitized.
+            sandbox = await executeArtifact(v3Result.artifact);
+            const persistedVersion = await publishV3Version(supabase, {
+              projectId: input.projectId,
+              ownerId: projectOwner.user_id,
+              spec: { schemaVersion: 3, engine: 'code-artifact-v3', artifactId: v3Result.artifact.id },
+              designPlan: v3Result.designPlan,
+              assetManifest: v3Result.assetManifest,
+              artifact: v3Result.artifact,
+              designPlanId: v3Result.designPlanId,
+              assetManifestId: v3Result.assetManifestId,
+              previewUrl: sandbox.previewUrl,
+              previewToken: sandbox.trafficAccessToken,
+              sandboxId: sandbox.sandboxId,
+            });
+            published = true;
+            await updateJobStep(supabase as any, jobId, 'v3-artifact', { status: 'succeeded', output_ref: persistedVersion.id });
+            await updateJobStatus(supabase as any, jobId, { status: 'succeeded', stage: 'completed', result_id: persistedVersion.id, finished_at: new Date().toISOString() });
+            return { jobId, versionId: persistedVersion.id, engine: 'code-artifact-v3' };
+          } finally {
+            // A successful preview owns its sandbox until E2B's bounded TTL. Every other path cleans it up.
+            if (sandbox && !published) await sandbox.kill().catch(() => undefined);
+          }
+       }
+
+       // Run build pipeline
       const spec = await step.run('build-pipeline', async () => {
         const { runBuildPipeline } = await import('@/lib/ai/pipeline');
-         const spec = await runBuildPipeline({
+          const spec = await runBuildPipeline({
           analysis: {
             schemaVersion: 1,
             summary: { text: analysis.summary_claim, status: analysis.summary_status, evidenceIds: [] },
@@ -490,16 +667,8 @@ export const buildJob = inngest.createFunction(
             limitations: [],
            },
            goal: project?.description || '',
-           sourceContext,
-           sourceEvidence: sourceContext.sourceEvidenceAvailable ? {
-             sourceUrl: sourceContext.sourceUrl,
-             sourceImageUrls: sourceContext.sourceImageUrls,
-             sectionOrder: sourceContext.sectionOrder,
-             fidelityMetadata: sourceContext.fidelityMetadata,
-           } : null,
-           screenshotContext: sourceContext.screenshotContext,
-           allowGenericFallback: !sourceContext.sourceEvidenceAvailable,
-         } as any);
+            sourceContext,
+          });
          if (sourceContext.sourceEvidenceAvailable && isGenericSourceFallback(spec)) {
            throw new Error('Build returned a generic fallback despite available source evidence');
          }
@@ -537,10 +706,10 @@ export const buildJob = inngest.createFunction(
       // Store theme
       const { error: themeError } = await supabase.from('product_spec_themes').insert({
         product_spec_id: persistedSpec.id,
-        preset: 'editorial-light',
-        accent: 'lime',
-        density: 'comfortable',
-        radius: 'sharp',
+        preset: spec.theme.preset,
+        accent: spec.theme.accent,
+        density: spec.theme.density,
+        radius: spec.theme.radius,
       });
       requireError(themeError);
 
@@ -727,9 +896,34 @@ export const qaJob = inngest.createFunction(
     if (claimed.duplicate) return { jobId: job.id, status: 'duplicate' };
     try {
       if (await stopIfCancelled(supabase, job.id, input.projectId)) return { jobId: job.id, status: 'cancelled' };
-      const { data: version } = await supabase.from('product_versions').select('spec').eq('id', input.versionId).eq('project_id', input.projectId).single();
-      if (!version) throw new Error('Version not found');
-      const parsed = ProductSpec.safeParse(version.spec);
+       const { data: version } = await supabase.from('product_versions').select('spec, engine, artifact_manifest').eq('id', input.versionId).eq('project_id', input.projectId).single();
+       if (!version) throw new Error('Version not found');
+       if (version.engine === 'code-artifact-v3') {
+         const artifact = CodeArtifact.safeParse(version.artifact_manifest);
+         const artifactIssues = artifact.success
+           ? artifact.data.files.filter((file) => sha256(file.content) !== file.sha256).map((file) => ({ check: 'schema' as const, code: 'artifact-file-hash', severity: 'error' as const, message: `Artifact file hash mismatch: ${file.path}`, suggestedFix: 'Regenerate this artifact.' }))
+           : [{ check: 'schema' as const, code: 'artifact-invalid', severity: 'error' as const, message: 'V3 artifact metadata is invalid.', suggestedFix: 'Regenerate this artifact.' }];
+         const deterministic = { valid: artifact.success && artifactIssues.length === 0, issues: artifactIssues, checkedSections: 0, checkedActions: 0 };
+         const { data: runtimeSecret } = await supabase.from('artifact_runtime_secrets').select('preview_url, preview_token').eq('version_id', input.versionId).single();
+         const rendered = await step.run('qa-artifact-rendered', async () => {
+           const { runRenderedQA } = await import('@/lib/qa/render');
+           if (!runtimeSecret?.preview_url || !runtimeSecret.preview_token || !artifact.success) {
+             return { issues: [{ check: 'rendered' as const, code: 'preview-unavailable', severity: 'error' as const, message: 'V3 artifact preview is unavailable; E2B execution did not provide a preview URL and access token.', suggestedFix: 'Configure E2B and rebuild the artifact.' }], viewports: [], checkedRoutes: [] };
+           }
+           return runRenderedQA({ previewUrl: runtimeSecret.preview_url, previewToken: runtimeSecret.preview_token, routes: artifact.data.routes });
+         });
+         const checks = [
+           { name: 'V3 artifact metadata and file hashes', passed: deterministic.valid },
+           { name: 'Rendered desktop/tablet/mobile artifact preview', passed: rendered.issues.length === 0 && rendered.viewports.length > 0 && artifact.success && rendered.checkedRoutes?.length === artifact.data.routes.length },
+         ];
+         const issues = [...deterministic.issues, ...rendered.issues];
+         const passed = checks.every((check) => check.passed);
+         const { data: report, error: reportError } = await supabase.from('qa_reports').insert({ project_id: input.projectId, version_id: input.versionId, checks, ai_findings: issues, screenshot_paths: [], status: passed ? 'passed' : 'failed' }).select().single();
+         if (reportError || !report) throw reportError || new Error('QA report could not be saved');
+         await updateJobStatus(supabase as any, job.id, { status: 'succeeded', stage: 'completed', result_id: report.id, finished_at: new Date().toISOString() });
+         return { jobId: job.id, reportId: report.id, passed };
+       }
+       const parsed = ProductSpec.safeParse(version.spec);
       const validationIssues = parsed.success ? [] : parsed.error.issues.map((issue) => ({ check: 'schema', code: 'schema-invalid', severity: 'error' as const, message: `${issue.path.join('.') || 'spec'}: ${issue.message}`, suggestedFix: 'Regenerate this version.' }));
       const deterministic = parsed.success ? validateProductSpec(parsed.data) : { valid: false, issues: validationIssues, checkedSections: 0, checkedActions: 0 };
       const rendered = parsed.success && deterministic.valid ? await step.run('qa-rendered', async () => {
@@ -747,7 +941,7 @@ export const qaJob = inngest.createFunction(
         { name: 'Actions and references', passed: parsed.success && !deterministic.issues.some((issue) => issue.check === 'actions') },
         { name: 'Responsive-safe constraints', passed: parsed.success && !deterministic.issues.some((issue) => issue.check === 'responsive') },
         { name: 'Theme validity', passed: parsed.success && !deterministic.issues.some((issue) => issue.check === 'theme') },
-        { name: 'Rendered desktop/tablet/mobile fixture', passed: parsed.success && rendered.issues.length === 0 && rendered.viewports.length > 0 },
+           { name: 'Rendered desktop/tablet/mobile fixture', passed: parsed.success && rendered.issues.length === 0 && rendered.viewports.length > 0 },
         { name: 'AI product review', passed: aiReview.passed },
       ];
       const passed = checks.every((check) => check.passed);
@@ -789,9 +983,9 @@ export const exportJob = inngest.createFunction(
     try {
       if (await stopIfCancelled(supabase, jobId, input.projectId)) return { jobId, status: 'cancelled' };
       // Fetch version and spec
-      const { data: version } = await supabase
+       const { data: version } = await supabase
         .from('product_versions')
-        .select('spec, version_number')
+        .select('spec, version_number, engine, artifact_manifest')
         .eq('id', input.versionId)
         .eq('project_id', input.projectId)
         .single();
@@ -799,24 +993,26 @@ export const exportJob = inngest.createFunction(
       if (!version) throw new Error('Version not found');
 
       // Generate ZIP
-      const zipBuffer = await step.run('generate-zip', async () => {
-        const { generateExportZip } = await import('@/lib/export/generator');
-        const zipBuffer = await generateExportZip({
-          spec: ProductSpec.parse(version.spec),
-          versionId: input.versionId,
-          projectName: 'form-export',
-        });
+       const zipBuffer = await step.run('generate-zip', async () => {
+          const { calculateZipChecksum, generateExportZip, generateArtifactExportZip } = await import('@/lib/export/generator');
+         const zipBuffer = version.engine === 'code-artifact-v3'
+           ? await generateArtifactExportZip(version.artifact_manifest)
+           : await generateExportZip({
+             spec: ProductSpec.parse(version.spec),
+             versionId: input.versionId,
+             projectName: 'form-export',
+           });
 
-        return zipBuffer;
-      });
+         return { buffer: zipBuffer, checksum: calculateZipChecksum(zipBuffer) };
+       });
 
       // Upload to Supabase Storage
       const storagePath = await step.run('upload-zip', async () => {
         const fileName = `export-${Date.now()}.zip`;
         const storagePath = `exports/${input.projectId}/${fileName}`;
-        const uploadBody = Buffer.isBuffer(zipBuffer)
-          ? zipBuffer
-          : Buffer.from((zipBuffer as { data?: number[] }).data || []);
+         const uploadBody = Buffer.isBuffer(zipBuffer.buffer)
+           ? zipBuffer.buffer
+           : Buffer.from((zipBuffer.buffer as { data?: number[] }).data || []);
 
         const { error } = await supabase.storage
           .from('exports')
@@ -837,7 +1033,7 @@ export const exportJob = inngest.createFunction(
           project_id: input.projectId,
           version_id: input.versionId,
           storage_path: storagePath,
-          checksum: '',
+           checksum: zipBuffer.checksum,
           status: 'completed',
         })
         .select()

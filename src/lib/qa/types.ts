@@ -17,6 +17,13 @@ export interface DeterministicQAReport {
 export interface RenderedQAReport {
   issues: QAFinding[];
   viewports: number[];
+  checkedRoutes?: string[];
+}
+
+export interface ArtifactRenderedQAInput {
+  previewUrl: string;
+  previewToken: string;
+  routes: Array<{ path: string; title?: string }>;
 }
 
 export type ValidProductSpec = ProductSpec;

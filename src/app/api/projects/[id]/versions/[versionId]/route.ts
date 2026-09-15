@@ -27,18 +27,50 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    const { data: version, error } = await supabase
+    const { data: rawVersion, error } = await supabase
       .from('product_versions')
-      .select('id, version_number, spec, schema_version, change_summary, created_at')
+      .select('id, version_number, spec, schema_version, change_summary, created_at, engine, design_plan, asset_manifest, artifact_manifest')
       .eq('id', versionId)
       .eq('project_id', id)
       .single();
 
-    if (error || !version) {
+    if (error || !rawVersion) {
       return NextResponse.json({ error: 'Version not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ data: version });
+    if (rawVersion.engine === 'code-artifact-v3') {
+      const artifact = rawVersion.artifact_manifest && typeof rawVersion.artifact_manifest === 'object'
+        ? rawVersion.artifact_manifest as { id?: string; templateVersion?: string; routes?: unknown; capabilities?: unknown; sourceHash?: string }
+        : {};
+      return NextResponse.json({ data: {
+        id: rawVersion.id,
+        version_number: rawVersion.version_number,
+        spec: rawVersion.spec,
+        schema_version: rawVersion.schema_version,
+        change_summary: rawVersion.change_summary,
+        created_at: rawVersion.created_at,
+        engine: rawVersion.engine,
+        design_plan: rawVersion.design_plan,
+        asset_manifest: rawVersion.asset_manifest,
+        artifact: {
+          id: artifact.id || null,
+          templateVersion: artifact.templateVersion || null,
+          routes: Array.isArray(artifact.routes) ? artifact.routes : [],
+          capabilities: Array.isArray(artifact.capabilities) ? artifact.capabilities : [],
+          sourceHash: artifact.sourceHash || null,
+          previewUrl: `/api/projects/${id}/versions/${versionId}/preview/`,
+        },
+      } });
+    }
+    return NextResponse.json({ data: {
+      id: rawVersion.id,
+      version_number: rawVersion.version_number,
+      spec: rawVersion.spec,
+      schema_version: rawVersion.schema_version,
+      change_summary: rawVersion.change_summary,
+      created_at: rawVersion.created_at,
+      engine: rawVersion.engine,
+    } });
   } catch (error) {
     console.error('Version detail error:', error);
     return NextResponse.json(

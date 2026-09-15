@@ -20,9 +20,16 @@ export default async function DashboardLayout({
 
   if (!user) redirect("/login?callbackUrl=/app");
 
+  const { data: projects } = await supabase
+    .from("projects")
+    .select("id, name, updated_at")
+    .eq("user_id", user.id)
+    .order("updated_at", { ascending: false })
+    .limit(30);
+
   return (
     <div className={`${manrope.className} ${inter.className} ${jetbrains.className} antialiased form-app-shell`}>
-      <WorkspaceSidebar />
+      <WorkspaceSidebar projects={(projects || []).map((project) => ({ id: project.id, name: project.name, updatedAt: project.updated_at }))} />
       <div className="form-app-main">
         <WorkspaceTopBar />
         <main className="form-page-scroll flex min-h-0 flex-col overflow-hidden">{children}</main>

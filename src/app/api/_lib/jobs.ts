@@ -3,13 +3,18 @@ const STALE_QUEUED_MS = 2 * 60 * 1000;
 const STALE_RUNNING_MS = 15 * 60 * 1000;
 
 export async function recoverStaleActiveJob(supabase: any, projectId: string, kinds: string[]) {
-  const { data: jobs, error } = await supabase.from('jobs').select('id, status, created_at, started_at')
+  const { data: jobs, error } = await supabase.from('jobs').select('id, status, created_at, started_at, cancel_requested')
     .eq('project_id', projectId).in('kind', kinds).in('status', ['queued', 'running']).order('created_at', { ascending: true });
   if (error) throw error;
   const now = Date.now();
-  const staleJobs = (jobs || []).filter((job: any) => now - new Date(job.status === 'running' ? job.started_at || job.created_at : job.created_at).getTime() > (job.status === 'running' ? STALE_RUNNING_MS : STALE_QUEUED_MS));
+  const staleJobs = (jobs || []).filter((job: any) => job.cancel_requested || now - new Date(job.status === 'running' ? job.started_at || job.created_at : job.created_at).getTime() > (job.status === 'running' ? STALE_RUNNING_MS : STALE_QUEUED_MS));
   for (const stale of staleJobs) {
-    await supabase.from('jobs').update({ status: 'failed', error_code: 'STALE_WORKER', error_message: 'Worker timed out. The request can be retried.', finished_at: new Date().toISOString() }).eq('id', stale.id).eq('project_id', projectId);
+    await supabase.from('jobs').update({
+      status: stale.cancel_requested ? 'cancelled' : 'failed',
+      error_code: stale.cancel_requested ? 'CANCELLED' : 'STALE_WORKER',
+      error_message: stale.cancel_requested ? 'Cancelled by user.' : 'Worker timed out. The request can be retried.',
+      finished_at: new Date().toISOString(),
+    }).eq('id', stale.id).eq('project_id', projectId);
   }
   return (jobs || []).find((job: any) => !staleJobs.some((stale: any) => stale.id === job.id)) || null;
 }

@@ -45,7 +45,7 @@ export function ProjectHeader({ project, onOpenRuns }: ProjectHeaderProps & { on
   }
 
   return (
-    <div className="shrink-0 border-b border-line-dark bg-surface px-5 py-4 md:px-6">
+    <div className="shrink-0 border-b border-gray-200 bg-surface px-5 py-4 md:px-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <button type="button" onClick={() => router.push('/app/projects')} className="mb-3 text-xs font-semibold text-text-secondary transition-colors hover:text-text">Back to projects</button>

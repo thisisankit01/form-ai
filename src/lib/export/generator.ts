@@ -1,11 +1,60 @@
 import JSZip from 'jszip';
+import { createHash } from 'node:crypto';
 import { ProductSpec } from '../product/schema';
 import { z } from 'zod';
+import { CodeArtifact, validateArtifactPaths } from '../generation-v3/contracts';
+import { V3_STARTER_FILES } from '../generation-v3/starter';
 
 export interface ExportOptions {
   spec: ProductSpec;
   versionId: string;
   projectName: string;
+}
+
+export async function generateArtifactExportZip(input: unknown): Promise<Buffer> {
+  const artifact = CodeArtifact.parse(input);
+  const zip = new JSZip();
+  const invalidPaths = validateArtifactPaths(artifact.files.map((file) => file.path));
+  if (invalidPaths.length > 0) throw new InvalidExportZipError(`Unsafe artifact paths: ${invalidPaths.join(', ')}`);
+  for (const file of artifact.files) {
+    if (sha256(file.content) !== file.sha256) throw new InvalidExportZipError(`Artifact file hash mismatch: ${file.path}`);
+    zip.file(file.path, file.content);
+  }
+  zip.file('FORM_ARTIFACT_METADATA.json', JSON.stringify({
+    schemaVersion: 1,
+    artifactId: artifact.id,
+    projectId: artifact.projectId,
+    templateVersion: artifact.templateVersion,
+    dependencyLockHash: artifact.dependencyLockHash,
+    sourceHash: artifact.sourceHash,
+    routes: artifact.routes,
+    capabilities: artifact.capabilities,
+    files: artifact.files.map(({ path, sha256: fileHash }) => ({ path, sha256: fileHash })),
+    buildHash: sha256(JSON.stringify({
+      files: artifact.files.map(({ path, content }) => ({ path, content })),
+      routes: artifact.routes,
+      capabilities: artifact.capabilities,
+      sourceHash: artifact.sourceHash,
+      dependencyLockHash: artifact.dependencyLockHash,
+      templateVersion: artifact.templateVersion,
+    })),
+    trustedStarter: {
+      templateVersion: artifact.templateVersion,
+      files: V3_STARTER_FILES.map(({ path, content }) => ({ path, sha256: sha256(content) })),
+    },
+    trustedConfig: ['package.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.node.json'],
+    lockfile: { path: 'package-lock.json', sha256: artifact.dependencyLockHash },
+    checksum: 'sha256 of this ZIP archive, calculated externally',
+  }, null, 2));
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+export function calculateZipChecksum(buffer: Buffer): string {
+  return sha256(buffer);
 }
 
 const REQUIRED_EXPORT_FILES = [

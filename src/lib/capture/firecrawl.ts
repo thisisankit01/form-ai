@@ -60,6 +60,7 @@ export interface CaptureResult {
   metadata: Record<string, unknown>;
   capturedAt: string;
   screenshotData?: string;
+  screenshotDataByViewport?: Array<{ viewport: 'desktop' | 'mobile'; data: string; width: number; height: number }>;
   fidelity?: Record<string, unknown>;
 }
 
@@ -109,6 +110,7 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
     const normalizedText = normalizeText(resultData.markdown || '');
     const screenshotPath = resultData.screenshot || resultData.screenshotUrl || null;
     let screenshotData: string | undefined;
+    const screenshotDataByViewport: CaptureResult['screenshotDataByViewport'] = [];
     let fidelity: Record<string, unknown> | undefined;
     let browser: any = null;
     try {
@@ -118,8 +120,6 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
       await withTimeout(page.goto(validatedUrl, { waitUntil: 'domcontentloaded', timeout: BROWSER_TIMEOUT_MS }), BROWSER_TIMEOUT_MS, 'Browser navigation');
       await withTimeout(page.evaluate(() => document.fonts?.ready), BROWSER_TIMEOUT_MS, 'Font loading');
       await withTimeout(page.waitForTimeout(1200), BROWSER_TIMEOUT_MS, 'Page settling');
-      const screenshot = await withTimeout(page.screenshot({ fullPage: true, type: 'png' }), BROWSER_TIMEOUT_MS, 'Screenshot capture') as Buffer;
-      screenshotData = screenshot.toString('base64');
       fidelity = await withTimeout(page.evaluate(() => {
         const resolveUrl = (value: string | null | undefined) => {
           if (!value) return null;
@@ -155,6 +155,14 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
           screenshot: { fullPage: true, width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
         };
       }), BROWSER_TIMEOUT_MS, 'Fidelity analysis');
+      for (const viewport of [{ name: 'desktop' as const, width: 1440 }, { name: 'mobile' as const, width: 390 }]) {
+        await page.setViewportSize({ width: viewport.width, height: 844 });
+        await withTimeout(page.waitForTimeout(250), BROWSER_TIMEOUT_MS, 'Viewport settling');
+        const screenshot = await withTimeout(page.screenshot({ fullPage: true, type: 'png' }), BROWSER_TIMEOUT_MS, `${viewport.name} screenshot capture`) as Buffer;
+        const data = screenshot.toString('base64');
+        screenshotDataByViewport.push({ viewport: viewport.name, data, width: viewport.width, height: 844 });
+        if (viewport.name === 'desktop') screenshotData = data;
+      }
     } catch (browserError) {
       console.warn('Browser fidelity capture unavailable; using Firecrawl screenshot:', browserError instanceof Error ? browserError.message : browserError);
     } finally {
@@ -171,6 +179,7 @@ export async function captureWebsite(url: string): Promise<CaptureResult> {
       metadata: { ...(resultData.metadata || {}), fidelity: fidelity || null },
       capturedAt: new Date().toISOString(),
       screenshotData,
+      screenshotDataByViewport,
       fidelity,
     };
   } catch (error) {

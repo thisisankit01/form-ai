@@ -36,7 +36,9 @@ export default function NewProjectPage() {
       });
       if (!analysisResponse.ok) {
         const analysisResult = await analysisResponse.json();
-        throw new Error(getApiErrorMessage(analysisResult, "Project created, but analysis could not be started."));
+        // The project still exists. Send the user to its recovery state instead
+        // of trapping them on the creation form with a dead-end error.
+        console.warn("Initial generation could not be queued:", getApiErrorMessage(analysisResult, "Generation could not be started."));
       }
       router.push(`/app/projects/${result.data.id}`);
     } catch (error) {
